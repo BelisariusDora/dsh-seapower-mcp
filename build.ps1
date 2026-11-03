@@ -1,0 +1,137 @@
+# Build SeaPowerAgentBridge.dll with the .NET Framework 4 csc compiler (C# 5 language level).
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File tools\spmcp\build.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\spmcp\build.ps1 -Deploy
+param(
+    [switch]$Deploy,
+    # Parallel agents build into their own output so two csc runs never fight over the
+    # same file. The deployment copy always comes from the default path.
+    [string]$Out = ''
+)
+
+$ErrorActionPreference = 'Stop'
+
+$here     = $PSScriptRoot                      # tools\spmcp
+$gameRoot = Split-Path -Parent (Split-Path -Parent $here)   # Sea Power
+$managed  = Join-Path $gameRoot 'Sea Power_Data\Managed'
+$src      = Join-Path $here 'src'
+$outDir   = Join-Path $here 'build'
+$outDll   = Join-Path $outDir 'SeaPowerAgentBridge.dll'
+if ($Out -ne '') {
+    if ([System.IO.Path]::IsPathRooted($Out)) { $outDll = $Out }
+    else { $outDll = Join-Path $here $Out }
+}
+
+$csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
+
+$anchorDll = $env:ANCHORCHAIN_DLL
+if (-not $anchorDll -or -not (Test-Path $anchorDll)) {
+    $anchorDll = 'E:\steam\steamapps\workshop\content\1286220\3380210757\AnchorChain.dll'
+}
+if (-not (Test-Path $anchorDll)) { throw "AnchorChain.dll not found: $anchorDll" }
+
+$refs = @(
+    (Join-Path $managed 'mscorlib.dll'),
+    (Join-Path $managed 'netstandard.dll'),
+    (Join-Path $managed 'System.dll'),
+    (Join-Path $managed 'System.Core.dll'),
+    (Join-Path $managed 'UnityEngine.dll'),
+    (Join-Path $managed 'UnityEngine.CoreModule.dll'),
+    # UnityEngine.Input lives in its own module; without this the compiler reports
+    # CS1069 asking for UnityEngine.InputLegacyModule.
+    (Join-Path $managed 'UnityEngine.InputLegacyModule.dll'),
+    # ImageConversion.EncodeToPNG lives in its own module; CS1070 asks for
+    # UnityEngine.ImageConversionModule when a screenshot is encoded.
+    (Join-Path $managed 'UnityEngine.ImageConversionModule.dll'),
+    # ScreenCapture.CaptureScreenshotAsTexture has its own module too. Capturing the
+    # composed frame (UI included) is only possible through ScreenCapture, not through
+    # Camera.Render into a RenderTexture.
+    (Join-Path $managed 'UnityEngine.ScreenCaptureModule.dll'),
+    (Join-Path $managed 'Newtonsoft.Json.dll'),
+    (Join-Path $managed 'UniRx.dll'),
+    (Join-Path $managed 'Unity.Mathematics.dll'),
+    (Join-Path $managed 'Unity.Entities.dll'),
+    (Join-Path $managed 'ParadoxNotion.dll'),
+    (Join-Path $managed 'Seapower-Scripts.dll'),
+    (Join-Path $managed 'Noesis.NoesisGUI.dll'),
+    (Join-Path $gameRoot 'BepInEx\core\BepInEx.dll'),
+    (Join-Path $gameRoot 'BepInEx\core\0Harmony.dll'),
+    $anchorDll
+)
+
+foreach ($r in $refs) {
+    if (-not (Test-Path $r)) { throw "missing reference: $r" }
+}
+
+if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+
+$sources = Get-ChildItem -Path $src -Filter '*.cs' -File | ForEach-Object { $_.FullName }
+if (-not $sources) { throw "no .cs files in $src" }
+
+$cscArgs = @(
+    '/nologo',
+    '/noconfig',
+    '/target:library',
+    '/nostdlib+',
+    '/optimize+',
+    '/codepage:65001',
+    '/warn:1',
+    '/langversion:5',
+    '/debug:pdbonly',
+    "/out:$outDll"
+)
+foreach ($r in $refs) { $cscArgs += "/r:$r" }
+foreach ($s in $sources) { $cscArgs += $s }
+
+Write-Host "csc: $csc"
+Write-Host "out: $outDll"
+Write-Host "sources:"
+$sources | ForEach-Object { Write-Host "  $_" }
+
+& $csc @cscArgs
+$code = $LASTEXITCODE
+if ($code -ne 0) { throw "compile failed with exit code $code" }
+
+if (-not (Test-Path $outDll)) { throw "compile reported success but no dll at $outDll" }
+$info = Get-Item $outDll
+Write-Host ("OK  {0}  ({1} bytes)" -f $info.FullName, $info.Length)
+
+if ($Deploy) {
+    $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp-v2'
+    if (-not (Test-Path $modDir)) { New-Item -ItemType Directory -Path $modDir -Force | Out-Null }
+    Copy-Item $outDll (Join-Path $modDir 'SeaPowerAgentBridge.dll') -Force
+    Copy-Item $anchorDll (Join-Path $modDir 'AnchorChain.dll') -Force
+    $ini = Join-Path $here '_info.ini'
+    if (Test-Path $ini) { Copy-Item $ini (Join-Path $modDir '_info.ini') -Force }
+    # P-36: the MCP server is half the product, and this script used to deploy only the DLL.
+    # That left a stale mcp_server.py next to a fresh bridge - the exact failure mode that
+    # already produced a 35840-vs-36864 mismatch once. Deploy it and report both sizes.
+    $mcp = Join-Path $here 'mcp_server.py'
+    if (Test-Path $mcp) {
+        Copy-Item $mcp (Join-Path $modDir 'mcp_server.py') -Force
+        Write-Host ("mcp_server.py  {0} bytes" -f (Get-Item $mcp).Length)
+    } else {
+        throw "mcp_server.py is missing from $here - refusing to half-deploy"
+    }
+    $startScript = Join-Path $here 'start_game.ps1'
+    if (Test-Path $startScript) { Copy-Item $startScript (Join-Path $modDir 'start_game.ps1') -Force }
+    # Read the destination back. A "deployed" line that was not verified is how a running
+    # game kept an old bridge for hours while the build directory moved on: every later
+    # measurement then described a binary that was never loaded. Hash both sides here so
+    # the mismatch fails in this command instead of being discovered later by inference.
+    $dstDll = Join-Path $modDir 'SeaPowerAgentBridge.dll'
+    $srcHash = (Get-FileHash $outDll -Algorithm SHA256).Hash
+    $dstHash = (Get-FileHash $dstDll -Algorithm SHA256).Hash
+    if ($srcHash -ne $dstHash) {
+        throw ("deploy verification failed: build {0} bytes {1} != deployed {2} bytes {3} - the game may still hold the dll" -f `
+            (Get-Item $outDll).Length, $srcHash.Substring(0, 16), (Get-Item $dstDll).Length, $dstHash.Substring(0, 16))
+    }
+    # Record the verified hash next to the dll. docs/TOMORROW_ACCEPTANCE.md tells a human to
+    # compare the deployed SHA256 against this file, and nothing wrote it: it was left over from
+    # an old deploy, so the acceptance check reported a mismatch on a perfectly good deployment.
+    Set-Content -Path (Join-Path $modDir 'deploy_sha.txt') -Value $dstHash -Encoding ASCII -NoNewline
+    Write-Host ("deploy verified  {0} bytes  {1}" -f (Get-Item $dstDll).Length, $dstHash.Substring(0, 16))
+    Write-Host ("deploy_sha.txt   {0}" -f $dstHash)
+    Write-Host "deployed to $modDir"
+}
