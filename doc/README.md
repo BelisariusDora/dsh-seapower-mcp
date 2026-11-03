@@ -1,5 +1,7 @@
 # spmcp_v2 — 第一层（游戏桥接）文档
 
+第二层的启动、工具映射和回执约定见 [MCP 转译](layer2_translation.md)。
+
 状态：**已迁移、已编译、未部署、未实机验证**。文档基线对应提交 `5d8457a`。
 
 老项目 `tools/spmcp` 从此是 legacy：只读、不再改动，作为行为参照与回退点。
@@ -110,3 +112,42 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Deploy    # 部�
 - 文档里"每 0.5 秒求值"一并改为"0.2 秒节流 + 边沿触发"。
 
 **仍然存在的局限**（未修，别当已解决）：上层消费者还没写（`k:"event"` 行目前只有文件没有读者）；`crosses` 依赖采样、两帧间穿越再返回会漏；`changes` 无死区；`FindUnit` 仍是线性扫描。
+
+## 9. Height control (measured 2026-11-05)
+
+**The unit of `GET /units/{id}.altitude` is feet.** The aircraft ini files say so
+(`StreamingAssets/original/aircraft/usn_f-4j.ini:78  Ceiling=55000.0 // ceiling in feet`,
+`:98  Altitudes=100,1000,3000,6000,10000,20000 // in feet`), and the same file annotates
+`MaxClimbRate=62 // Meters per second` and `WingSpan=11.71 //meters`, so the unit comments
+can be trusted. A freshly launched F-4J reads 64-68 ft while sitting on a flight deck ~20 m
+above the waterline - that is the second confirmation.
+
+**Climb with the preset band, not with an absolute altitude:**
+
+```
+POST /units/{id}/move  {"lat": 31.35483, "lon": 26.80100, "height_state": "High"}
+```
+
+`height_state` is `WaypointHeightState`; a request without it means `NoChange` and asks for
+no band at all (`src/Api.cs:2251`). Measured on an F-4J (35 s settle at 10x, feet):
+
+| height_state | measured | the ini layer it lands on |
+|---|---|---|
+| `Low` | 936 | 1000 |
+| **`High`** | **5,940 - 5,972** | **6000** |
+| `Medium` | 9,961 - 9,971 | 10000 |
+| `Ceiling` | still climbing at 32,689 | 55000 |
+| `VeryLow`, `Cruise`, `VeryHigh` | not settled cleanly (samples caught mid-climb) | - |
+
+So "come in at 6,000 ft" is `height_state:"High"`, and it is exact.
+
+**`op:"altitude"` is experimental and should not be used yet.** It writes
+`_desiredAltitudeToSet` after converting feet to metres, but the read-back
+(`heightInFeet`) comes back null on every call, so the unit of the field was never verified.
+The supported channel is the preset band above; revisit the absolute-altitude op only with a
+readable read-back. (Owner decision, 2026-11-05: use the presets for now.)
+
+**Do not issue an approach while a recovery is running.** `recover` climbs the aircraft to
+its `Ceiling` band first; on 2026-11-05 a pair of F-4J went to 51,776 ft on a queued recall
+and only came down when a fresh `move` replaced the recall. Give the approach order after
+the recovery is finished, or cancel the recall first.
