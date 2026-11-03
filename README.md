@@ -4,6 +4,20 @@
 
 [下载 Alpha 0.1.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v0.1.0-alpha) · [桥接文档](doc/README.md) · [MCP 文档](doc/layer2_translation.md)
 
+## 当前 AI 能力 / What AI can do today
+
+接入 MCP 后，AI 可以按玩家指示读取战场、下达命令和进行图上作业。 / With MCP connected, an AI assistant can inspect the battlefield, issue orders, and work on the tactical map at the player's direction.
+
+| 作业 / Area | 中文 | English |
+|---|---|---|
+| **态势感知 / Situational awareness** | 查询己方编组、单位和接触航迹，读取航路、弹药、武器射程、飞行甲板和潜艇状态。 | Inspect friendly task forces, units, and contact tracks. Read routes, magazines, weapon ranges, flight decks, and submarine status. |
+| **舰队指挥 / Fleet command** | 对单舰或编组下达航速、航向和航路命令，管理雷达、声呐和电磁管制，校验交战条件并下达攻击或停火指令。 | Set speed, course, and waypoints for individual ships or groups. Manage radar, sonar, and EMCON. Validate engagements and issue attack or ceasefire orders. |
+| **舰载机与航空作业 / Carrier and air operations** | 查看甲板、在空飞机和航空任务。指定挂载起飞，指挥返航和回收，取消航空任务或安排重新挂载。 | Inspect flight decks, airborne aircraft, and deck tasks. Launch aircraft with a specified loadout, order return and recovery, abort tasks, or rearm aircraft. |
+| **反潜作业 / Anti-submarine warfare** | 查询潜艇状态与深度，控制支持的潜航模式，操作声呐，并指挥具备能力的航空平台投放声呐浮标。 | Inspect submarine status and depth, command supported dive modes, operate sonar, and deploy sonobuoys from capable aircraft. |
+| **图上作业 / Tactical map work** | 聚焦和缩放地图，查看或规划航路，测量距离与方位，绘制标记、量程圈、多边形和文字，并获取截图。 | Focus and zoom the map, inspect or plot routes, measure range and bearing, draw markers, range rings, polygons, and labels, and capture screenshots. |
+
+具体命令取决于平台能力和当前场景。提交命令后，可用读取工具核实游戏状态。 / Available commands depend on the platform and scenario. Use read tools to verify the resulting game state after issuing an order.
+
 ## 安装并接入 MCP
 
 1. 安装 [AnchorChain Preloader 和 Workshop 模组](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html)。
