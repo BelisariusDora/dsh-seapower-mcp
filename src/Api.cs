@@ -2118,6 +2118,7 @@ private static bool IsRefused(JToken result)
             if (op == "abort") return new string[] { "task", "all", "delayed", "unsafe_immediate" };
             if (op == "rearm") return new string[] { "reload_broken" };
             if (op == "ceasefire") return new string[] { "report", "clear_order", "formation_check", "stop_jamming", "air_formation_check", "clear_attack_tasks" };
+            if (op == "altitude") return new string[] { "feet", "meters" };
             if (op == "rtb") return new string[0];
             if (op == "waypointClear") return new string[0];
             return null; // unknown op - the dispatch switch reports it
@@ -3086,10 +3087,53 @@ private static bool IsRefused(JToken result)
                 o["action"] = "identify";
                 o["target"] = targetId;
             }
+            else if (op == "altitude")
+            {
+                // NEW (2026-11-05): an absolute altitude channel. Waypoint height_state is a
+                // band preset, and measured live on two F-4J it moved the altitude by exactly
+                // nothing (Low, Medium and VeryHigh all left them at ~730-975). ObjectBase
+                // carries the pair the game itself writes when an order changes altitude:
+                // _desiredAltitudeToSet (Single, meters) and _setDesiredAltitude (Boolean).
+                int feetReq = req["feet"] != null ? ReqInt(req, "feet", 0) : -1;
+                int metersReq = req["meters"] != null ? ReqInt(req, "meters", 0) : -1;
+                if (feetReq < 0 && metersReq < 0)
+                    throw new ApiException(400, "bad_request",
+                        "give 'feet' or 'meters' (absolute altitude, above sea level)", false);
+                double metersWanted = feetReq >= 0 ? feetReq / 3.280839895013123 : metersReq;
+                bool wroteValue = SetMember(u, "_desiredAltitudeToSet", (float)metersWanted);
+                bool wroteFlag = SetMember(u, "_setDesiredAltitude", true);
+                o["action"] = "altitude";
+                o["metersRequested"] = Math.Round(metersWanted, 1);
+                o["feetRequested"] = Math.Round(metersWanted * 3.280839895013123, 0);
+                o["desiredAltitudeWritten"] = wroteValue;
+                o["applyFlagWritten"] = wroteFlag;
+                o["altitudeNowFt"] = SafeNum(Rx(u, "HeightInFeet"));
+                o["note"] = "the game applies a desired altitude on its own tick; read heightInFeet back after a second or two";
+            }
             else if (op == "rtb")
             {
-                u.setOrder(Order.Type.ReturnToBase, (ObjectBase)null, true);
+                // m04026: with a null base ReturnToBase was a display order only. The
+                // aircraft kept circling the carrier (landingInProgress stayed false) and
+                // the reply still claimed a return. Resolve the hull's own home base; if
+                // there is none, refuse instead of pretending.
+                object hbRaw = null;
+                try { InvokeN(u, "SearchForHomeBase", new Type[0], new object[0]); }
+                catch (Exception) { }
+                hbRaw = Member(u, "_homeBase");
+                if (hbRaw == null)
+                {
+                    try { hbRaw = InvokeN(u, "getHomeBase", new Type[0], new object[0]); }
+                    catch (Exception) { hbRaw = null; }
+                }
+                ObjectBase homeBase = hbRaw as ObjectBase;
+                if (homeBase == null)
+                    throw new ApiException(409, "no_home_base",
+                        "no home base is known for this unit, so ReturnToBase would be a display order only and"
+                        + " nothing was ordered. A carrier air group is recalled with POST /units/<carrier>/recover.",
+                        false);
+                u.setOrder(Order.Type.ReturnToBase, homeBase, true);
                 o["action"] = "rtb";
+                o["homeBase"] = SafeNum(Rx(homeBase, "UniqueID"));
             }
             else if (op == "ceasefire")
             {
@@ -3150,6 +3194,15 @@ private static bool IsRefused(JToken result)
                 string aircraft = ReqStr(req, "aircraft", null);
                 string loadout = ReqStr(req, "loadout", null);
                 string squadron = ReqStr(req, "squadron", null);
+                // m04013: an omitted loadout defaulted to AirToAir, so a strike package
+                // took off with AIM-7s and could not bomb anything. Say what you carry;
+                // GET /units/{id}/deck lists the loadouts this airframe accepts.
+                if (string.IsNullOrEmpty(loadout))
+                    throw new ApiException(400, "loadout_required",
+                        "POST /units/" + id + "/launch needs an explicit 'loadout' (Strike, SEAD, CAP, ...)."
+                        + " It used to default to AirToAir, which is how a bombing run left the deck with"
+                        + " air-to-air missiles. GET /units/" + id + "/deck lists what this airframe accepts.",
+                        false);
                 bool requireExact = ReqBool(req, "require_exact_loadout", false);
                 int launchCount = ReqInt(req, "launch_count", 0);
                 string missionName = ReqStr(req, "mission", null);
