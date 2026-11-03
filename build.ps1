@@ -118,7 +118,10 @@ Set-Content -Path $stampFile -Value ($buildStamp + ' ' + $info.Length + ' ' + $s
 Write-Host ("build stamp      {0}" -f $buildStamp)
 
 if ($Deploy) {
-    $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp-v2'
+    # The legacy project owned 'dsh-spmcp' and its files were moved out on 2026-11-05, so v2
+# took that slot over: it is the directory the game already has enabled, and deploying to a
+# second directory with the same plugin id only produced a stale copy nobody loaded.
+$modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     if (-not (Test-Path $modDir)) { New-Item -ItemType Directory -Path $modDir -Force | Out-Null }
     Copy-Item $outDll (Join-Path $modDir 'SeaPowerAgentBridge.dll') -Force
     Copy-Item $stampFile (Join-Path $modDir 'SeaPowerAgentBridge.build') -Force
