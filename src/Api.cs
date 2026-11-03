@@ -5266,9 +5266,16 @@ private static bool IsRefused(JToken result)
         /// has legacy input disabled the read throws once; it is caught, logged once and
         /// then skipped instead of being retried every frame.
         /// </summary>
+        // TEMPORARY: the console/ inspector UI is switched off while the work-order
+        // pipeline is being built. It flickered and stole the N key; the pages are
+        // still here, they just do not paint and do not poll. Flip this to false to
+        // bring the console back exactly as it was.
+        private const bool UiHidden = true;
+
         public static void InspectorKeyTick()
         {
             if (_keyPollBroken) return;
+            if (UiHidden) return;
             try
             {
                 // The console host owns the single hotkey: N opens or collapses the whole
@@ -5315,6 +5322,8 @@ private static bool IsRefused(JToken result)
         public static void UiTick()
         {
             if (!Core.IsMain) return;
+            if (UiHidden) return;
+            // (temporary) no window ticks while the UI is hidden
             try { UiBridge.Tick(); }
             catch (Exception) { }
             // One console, two tabs: decide who is mounted before either page paints.

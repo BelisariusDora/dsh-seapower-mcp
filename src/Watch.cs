@@ -1,91 +1,140 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Reflection;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace SeaPowerAgentBridge
 {
-    /// <summary>Native triggers for layer 1.
+    /// <summary>
+    /// Layer 1 evidence producer. Two duties only: produce completion evidence reliably, and
+    /// hand it to the file channel that layer 2 already reads. It does NOT run work orders, decide
+    /// outcomes, or talk to the player - that state machine lives in the upper layer's code.
     ///
-    /// The upper layer registers "when this unit satisfies this condition, tell me". The rule is
-    /// evaluated on the existing main-thread tick (0.5 s) and every hit is written to the
-    /// CommsBridge outbox as a k:"event" line, which is the one path that already reaches the
-    /// harness with locks, cursors and a tri-state delivery record.
+    /// Sampling: the unit and the field reader are resolved ONCE at registration; every tick only
+    /// reads the (object, field) pairs some rule subscribed to, one read per pair, shared by every
+    /// rule on that pair. No rules means no work. Scene unit count does not change this cost.
     ///
-    /// Deliberately NOT here:
-    ///  - no intel gate (layer 1 answers with truth; the policy layer belongs above it);
-    ///  - no HOLD check (watching is not commanding);
-    ///  - no persistence (a trigger is temporary by request: ttl_s + MaxRules + once).
-    ///
-    /// The one rule that is not negotiable: a condition whose truth cannot be read answers
-    /// "unknown". Folding unknown into true or false is the lie this project keeps paying for.
+    /// Evidence: mode "state" fires when the predicate holds now (a destroyed target is destroyed
+    /// at once); mode "edge" fires when the value differs from the reading taken at registration.
+    /// A read failure is its own kind. unreadable/missing/unknown/expired are never evidence.
+    /// once: freeze the event, deliver it, then retire. A failed append retries the SAME event_id.
     /// </summary>
     internal static class Watch
     {
-        private sealed class Rule
-        {
-            public int Id;
-            public string UnitId;
-            public string Field;
-            public string Op;      // eq | ne | gt | lt | exists | changes | crosses
-            public string Value;   // JSON literal as text
-            public bool Once;
-            public int Hits;
-            public string CreatedUtc;
-            public double ExpiresAt;   // unix seconds; 0 = no expiry
-            public bool Removed;
-            public string LastValue;
-            public string WorldGeneration;
-            public bool PrevHit;
-            public bool PrevKnown;
-        }
-
         public const int MaxRules = 64;
+        private const double SampleIntervalSeconds = 0.5;
+
         private static readonly object Gate = new object();
         private static readonly List<Rule> Rules = new List<Rule>();
         private static int _seq;
+        private static long _eventSeq;
+        private static double _lastSample = -1.0;
+        private static string _genStamp = "unknown";
+
+        private sealed class Reader
+        {
+            public FieldInfo Field;
+            public PropertyInfo Property;
+            public bool Exists { get { return Field != null || Property != null; } }
+            public object Read(object holder)
+            {
+                try
+                {
+                    if (holder == null) return null;
+                    if (Field != null) return Field.GetValue(holder);
+                    if (Property != null) return Property.GetValue(holder, null);
+                }
+                catch (Exception) { }
+                return null;
+            }
+        }
+
+        private sealed class Rule
+        {
+            public string WatchId;
+            public string UnitKey;
+            public object Unit;
+            public string WorldGeneration;
+            public Reader Reader;
+            public string Field;
+            public string Mode;
+            public string Op;
+            public bool HasWant;
+            public double Want;
+            public string WantRaw;
+            public bool Once;
+            public double CreatedAt;
+            public double ExpiresAt;
+            public int Hits;
+            public bool PrevHit;
+            public bool HadBaseline;
+            public string BaselineRaw;
+            public bool Frozen;
+            public string FrozenJson;
+            public string Removed;
+            public string LastValueRaw;
+        }
 
         public static bool Matches(string path)
         {
-            if (path == null) return false;
-            return path == "/watch" || path.StartsWith("/watch/", StringComparison.Ordinal);
+            if (string.IsNullOrEmpty(path)) return false;
+            string p = path;
+            int q = p.IndexOf('?');
+            if (q >= 0) p = p.Substring(0, q);
+            p = p.TrimEnd('/');
+            return p.Equals("/watch", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/watch/", StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>Off-main-thread entry: parse, then evaluate registrations on the main thread.</summary>
         public static HttpResult Dispatch(string method, string path, string body)
         {
+            string m = (method ?? "GET").ToUpperInvariant();
+            string p = path ?? "";
+            int q = p.IndexOf('?');
+            if (q >= 0) p = p.Substring(0, q);
+            p = p.TrimEnd('/');
+            JObject req = null;
+            if (!string.IsNullOrEmpty(body))
+            {
+                try { req = JObject.Parse(body); }
+                catch (Exception ex)
+                {
+                    return Envelope(false, null, "bad_json", "body is not a JSON object: " + ex.Message, false, 400);
+                }
+            }
             try
             {
-                JObject parsed = null;
-                if (!string.IsNullOrEmpty(body))
+                JObject data;
+                lock (Gate)
                 {
-                    try { parsed = JObject.Parse(body); }
-                    catch (Exception e)
+                    if (p.Equals("/watch", StringComparison.OrdinalIgnoreCase))
                     {
-                        return Envelope(false, null, "bad_json", "the request body is not JSON: " + e.Message, false, 400);
+                        if (m == "POST") data = Create(req ?? new JObject());
+                        else if (m == "GET") data = List();
+                        else return Envelope(false, null, "method_not_allowed", m + " /watch", false, 405);
+                    }
+                    else
+                    {
+                        string id = p.Substring("/watch/".Length).Trim('/');
+                        if (m == "GET") data = One(id);
+                        else if (m == "DELETE") data = Remove(id);
+                        else return Envelope(false, null, "method_not_allowed", m + " /watch/{id}", false, 405);
                     }
                 }
-                if (!Core.IsMain)
-                {
-                    object raw = Core.OnMainThread(delegate { return Handle(method, path, parsed); }, 8000);
-                    JObject res = raw as JObject;
-                    if (res == null) return Envelope(false, null, "bad_reply", "the watch handler returned nothing", false, 500);
-                    return new HttpResult(200, Encoding.UTF8.GetBytes(res.ToString(Formatting.None)), "application/json");
-                }
-                JObject direct = Handle(method, path, parsed);
-                return new HttpResult(200, Encoding.UTF8.GetBytes(direct.ToString(Formatting.None)), "application/json");
+                return Envelope(true, data, null, null, false, 200);
             }
-            catch (MainThreadTimeoutException e)
+            catch (ApiException ex)
             {
-                return Envelope(false, null, "main_thread_timeout",
-                    "the game did not answer within 8000 ms; whether the registration happened is unknown: " + e.Message,
-                    e.Safe, 504);
+                return Envelope(false, null, ex.Code, ex.Message, ex.Retryable, ex.Status);
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                return Envelope(false, null, "route_error", e.GetType().Name + ": " + e.Message, false, 500);
+                Core.Log("watch route failed: " + ex.Message);
+                return Envelope(false, null, "watch_failed", ex.Message, false, 500);
             }
         }
 
@@ -96,436 +145,483 @@ namespace SeaPowerAgentBridge
             if (data != null) o["data"] = data;
             if (!ok)
             {
-                JObject err = new JObject();
-                err["code"] = code;
-                err["message"] = message;
-                err["retryable"] = retryable;
-                o["error"] = err;
+                JObject e = new JObject();
+                e["code"] = code ?? "error";
+                e["message"] = message ?? code;
+                e["retryable"] = retryable;
+                o["error"] = e;
             }
-            return new HttpResult(status, Encoding.UTF8.GetBytes(o.ToString(Formatting.None)), "application/json");
+            byte[] bytes = Encoding.UTF8.GetBytes(o.ToString(Formatting.None));
+            return new HttpResult(status, bytes, "application/json");
         }
 
-        /// <summary>Main-thread handler for the four watch routes.</summary>
-        private static JObject Handle(string method, string path, JObject req)
-        {
-            if (!Core.IsMain) throw new ApiException(500, "off_main_thread", "watch routes touch game objects", false);
-
-            string tail = path.Length > "/watch".Length ? path.Substring("/watch".Length).Trim('/') : "";
-            if (method == "GET" && tail.Length == 0) return List();
-            if (method == "POST" && tail.Length == 0) return Create(req ?? new JObject());
-            if (method == "DELETE" && tail.Length > 0) return Remove(tail);
-            if (method == "GET" && tail.Length > 0) return One(tail);
-            return Fail("method_not_allowed", method + " " + path + " is not a watch route", false);
-        }
+        // ------------------------------------------------------------ registration
 
         private static JObject Create(JObject req)
         {
-            string unitId = ReqText(req, "unit_id");
-            if (unitId.Length == 0) return Fail("missing_unit_id", "unit_id is required", false);
+            if (Rules.Count >= MaxRules)
+                throw new ApiException(409, "watch_limit", "at most " + MaxRules + " triggers; delete some first", false);
+
+            string unitKey = ReqText(req, "unit_id");
+            if (string.IsNullOrEmpty(unitKey)) unitKey = ReqText(req, "unit");
+            if (string.IsNullOrEmpty(unitKey)) unitKey = ReqText(req, "unique_id");
+            if (string.IsNullOrEmpty(unitKey))
+                throw new ApiException(400, "unit_id_required", "pass the ObjectBase.UniqueID of the unit", false);
+
             string field = ReqText(req, "field");
-            if (field.Length == 0) return Fail("missing_field", "field is required (a property or field name on the unit)", false);
-            string op = ReqText(req, "op");
-            if (op.Length == 0) op = "eq";
-            op = op.ToLowerInvariant();
-            if (op != "eq" && op != "ne" && op != "gt" && op != "lt" && op != "exists" && op != "changes" && op != "crosses")
-                return Fail("unknown_op", "op must be eq|ne|gt|lt|exists|changes|crosses", false);
+            if (string.IsNullOrEmpty(field))
+                throw new ApiException(400, "field_required", "pass the field to read, e.g. \"IsDestroyed\"", false);
 
-            int ttl = 0;
-            if (req["ttl_s"] != null) ttl = (int)req["ttl_s"];
-            bool once = req["once"] != null && req["once"].Value<bool>();
+            string mode = (ReqText(req, "mode") ?? "state").ToLowerInvariant();
+            if (mode != "state" && mode != "edge")
+                throw new ApiException(400, "bad_mode", "mode is \"state\" or \"edge\"", false);
 
-            // Resolve once now so a typo answers immediately instead of never firing.
-            object unit = FindUnit(unitId);
-            if (unit == null) return Fail("unit_not_found", "no unit with id " + unitId, false);
-            string why;
-            string probe = ReadAsText(unit, field, out why);
-            if (why.Length > 0 && op != "exists")
-                return Fail("field_unreadable", "'" + field + "' cannot be read on that unit: " + why, false);
+            string op = (ReqText(req, "op") ?? (mode == "edge" ? "changed" : "eq")).ToLowerInvariant();
+            if (op != "eq" && op != "ne" && op != "gt" && op != "lt" && op != "exists" && op != "changed")
+                throw new ApiException(400, "bad_op", "op is one of eq, ne, gt, lt, exists, changed", false);
+            if (mode == "edge") op = "changed";
+
+            object unit = ResolveUnit(unitKey);
+            if (unit == null)
+                throw new ApiException(404, "unit_not_found", "no unit with UniqueID " + unitKey, false);
+
+            Reader reader = ResolveReader(unit, field);
+            if (!reader.Exists)
+                throw new ApiException(400, "field_unreadable", "no field or property \"" + field + "\" on " + unit.GetType().Name, false);
 
             Rule r = new Rule();
-            r.UnitId = unitId;
+            r.WatchId = "w" + (++_seq).ToString(CultureInfo.InvariantCulture);
+            r.UnitKey = unitKey;
+            r.Unit = unit;
             r.Field = field;
+            r.Reader = reader;
+            r.Mode = mode;
             r.Op = op;
-            r.Value = req["value"] != null ? req["value"].ToString(Formatting.None) : null;
-            r.Once = once;
-            r.ExpiresAt = ttl > 0 ? NowSeconds() + ttl : 0;
-            r.CreatedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            r.LastValue = probe;
-            r.WorldGeneration = SafeString(delegate { return Api.WorldGenerationForWatch(); }, "unknown");
-            lock (Gate)
-            {
-                if (Rules.Count >= MaxRules) return Fail("watch_limit", "at most " + MaxRules + " triggers; delete some first", false);
-                r.Id = ++_seq;
-                Rules.Add(r);
-            }
-            Core.Log("watch +" + r.Id + " unit " + unitId + " " + field + " " + op + " " + (r.Value ?? "") + (once ? " once" : ""));
-            JObject d = Describe(r);
-            d["probe"] = probe;
-            d["probeKnown"] = why.Length == 0;
-            return Ok(d);
-        }
+            r.CreatedAt = Now;
+            r.WorldGeneration = CurrentGeneration();
 
-        private static JObject List()
-        {
-            JArray arr = new JArray();
-            lock (Gate)
+            double ttl = TryNumber(req, "ttl_s", 0.0);
+            r.ExpiresAt = ttl > 0 ? r.CreatedAt + ttl : 0.0;
+            JToken onceTok = req["once"];
+            if (onceTok != null && onceTok.Type != JTokenType.Null)
             {
-                foreach (Rule r in Rules) if (!r.Removed) arr.Add(Describe(r));
-            }
-            JObject d = new JObject();
-            d["count"] = arr.Count;
-            d["max"] = MaxRules;
-            d["triggers"] = arr;
-            return Ok(d);
-        }
-
-        private static JObject One(string tail)
-        {
-            int id;
-            if (!int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out id))
-                return Fail("bad_id", "watch id must be a number", false);
-            lock (Gate)
-            {
-                foreach (Rule r in Rules)
-                    if (r.Id == id && !r.Removed) return Ok(Describe(r));
-            }
-            return Fail("watch_not_found", "no trigger with id " + id, false);
-        }
-
-        private static JObject Remove(string tail)
-        {
-            int id;
-            if (!int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out id))
-                return Fail("bad_id", "watch id must be a number", false);
-            lock (Gate)
-            {
-                foreach (Rule r in Rules)
+                if (onceTok.Type == JTokenType.Boolean) r.Once = (bool)onceTok;
+                else
                 {
-                    if (r.Id != id || r.Removed) continue;
-                    r.Removed = true;
-                    Core.Log("watch -" + id);
-                    JObject d = Describe(r);
-                    d["removed"] = true;
-                    return Ok(d);
+                    bool parsed;
+                    r.Once = bool.TryParse(onceTok.ToString(), out parsed) && parsed;
                 }
             }
-            return Fail("watch_not_found", "no trigger with id " + id, false);
-        }
-
-        /// <summary>Called from the main-thread tick. Never throws: a trigger that breaks the
-        /// frame loop is worse than a trigger that misses a beat.</summary>
-        public static void Tick()
-        {
-            try
+            if (req["value"] != null)
             {
-                if (!Core.IsMain) return;
-                double now = NowSeconds();
-                if (now - _lastEval < EvalIntervalSeconds) return;
-                _lastEval = now;
-                List<Rule> due = null;
-                string gen = CurrentGeneration();
-                lock (Gate)
-                {
-                    for (int i = Rules.Count - 1; i >= 0; i--)
-                    {
-                        Rule r = Rules[i];
-                        if (r.Removed) { Rules.RemoveAt(i); continue; }
-                        if (r.WorldGeneration != "unknown" && gen != "unknown" &&
-                            !string.Equals(r.WorldGeneration, gen, StringComparison.Ordinal))
-                        {
-                            // Every id in this rule now means a different object.
-                            r.Removed = true;
-                            Rules.RemoveAt(i);
-                            Emit(r, "expired", null, "the world was rebuilt (" + r.WorldGeneration + " -> " + gen + ")");
-                            continue;
-                        }
-                        if (r.ExpiresAt > 0 && now > r.ExpiresAt)
-                        {
-                            r.Removed = true;
-                            Rules.RemoveAt(i);
-                            Emit(r, "expired", null, "ttl elapsed");
-                            continue;
-                        }
-                        if (due == null) due = new List<Rule>();
-                        due.Add(r);
-                    }
-                }
-                if (due == null) return;
+                r.HasWant = true;
+                r.WantRaw = req["value"].ToString();
+                r.Want = TryNumber(req, "value", double.NaN);
+            }
 
-                // Evaluate outside the lock: reflection can be slow, and a rule cannot be
-                // removed between the copy and the read.
-                for (int i = 0; i < due.Count; i++)
+            object baseline = reader.Read(unit);
+            r.HadBaseline = baseline != null;
+            r.BaselineRaw = AsText(baseline);
+            r.LastValueRaw = r.BaselineRaw;
+
+            Rules.Add(r);
+            JObject data = Describe(r);
+            if (mode == "state")
+            {
+                bool satisfied;
+                string raw;
+                bool comparable = Evaluate(r, out satisfied, out raw);
+                data["satisfied_now"] = comparable && satisfied;
+                if (raw != null) data["reading"] = raw;
+                if (comparable && satisfied)
                 {
-                    Rule r = due[i];
-                    object unit = FindUnit(r.UnitId);
-                    if (unit == null)
-                    {
-                        Fire(r, "missing", null, "the unit object is gone");
-                        continue;
-                    }
-                    string why;
-                    string nowText = ReadAsText(unit, r.Field, out why);
-                    if (why.Length > 0)
-                    {
-                        // Not "no" and not "yes": say it could not be read, once per transition.
-                        if (r.LastValue != "?unknown") Fire(r, "unknown", null, why);
-                        r.LastValue = "?unknown";
-                        continue;
-                    }
-                    if (r.Op == "changes")
-                    {
-                        if (r.LastValue != null && r.LastValue != nowText) Fire(r, "changed", nowText, null);
-                        r.LastValue = nowText;
-                        continue;
-                    }
-                    bool hit;
-                    if (!Compare(r, nowText, out hit))
-                    {
-                        r.LastValue = nowText;
-                        continue;
-                    }
-                    // Edge triggered: a permanent eq rule used to append one outbox line per
-                    // frame while it stayed true, which is both a log flood and real main-thread
-                    // cost (reflection + file append inside the frame loop).
-                    if (hit && !r.PrevHit) Fire(r, "hit", nowText, null);
-                    r.PrevHit = hit;
-                    r.LastValue = nowText;
+                    r.PrevHit = true;
+                    HitsAndMaybeFreeze(r, "hit", raw);
                 }
             }
-            catch (Exception e)
+            else
             {
-                Core.Log("watch tick failed: " + e.GetType().Name + ": " + e.Message);
+                data["baseline"] = r.BaselineRaw;
+                data["baseline_known"] = r.HadBaseline;
             }
+            return data;
         }
 
-        private static bool Compare(Rule r, string now, out bool hit)
+        private static object ResolveUnit(string unitKey)
         {
-            hit = false;
-            if (r.Op == "exists") { hit = now != null; return true; }
-            string want = r.Value;
-            if (want != null && want.Length >= 2 && want[0] == '"') want = want.Substring(1, want.Length - 2);
-            if (r.Op == "eq") { hit = Same(now, want); return true; }
-            if (r.Op == "ne") { hit = !Same(now, want); return true; }
-            if (r.Op == "gt" || r.Op == "lt" || r.Op == "crosses")
-            {
-                double a, b;
-                if (!TryNumber(now, out a) || !TryNumber(want, out b)) return false;
-                if (r.Op == "gt") { hit = a > b; return true; }
-                if (r.Op == "lt") { hit = a < b; return true; }
-                double prev;
-                bool had = TryNumber(r.LastValue, out prev);
-                hit = had && ((prev < b && a >= b) || (prev > b && a <= b));
-                return true;
-            }
-            return false;
-        }
-
-        private static bool Same(string a, string b)
-        {
-            if (a == null || b == null) return a == b;
-            if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase)) return true;
-            double x, y;
-            if (TryNumber(a, out x) && TryNumber(b, out y)) return Math.Abs(x - y) < 1e-9;
-            return false;
-        }
-
-        private static bool TryNumber(string s, out double v)
-        {
-            v = 0;
-            if (string.IsNullOrEmpty(s)) return false;
-            return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
-        }
-
-        private static void Fire(Rule r, string kind, string now, string why)
-        {
-            bool wasHit = kind == "hit" || kind == "changed";
-            if (wasHit) r.Hits++;
-            bool delivered = Emit(r, kind, now, why);
-            // Retiring a once-rule whose line never reached the outbox loses the only chance to
-            // report it. Keep it and try again next evaluation.
-            if (r.Once && wasHit && delivered)
-            {
-                r.Removed = true;
-                lock (Gate) Rules.Remove(r);
-            }
-            if (r.Once && (kind == "missing" || kind == "unknown")) r.Removed = true;
-        }
-
-        /// <summary>One line into the outbox the harness already polls. k:"event" keeps trigger
-        /// traffic apart from the player's chat, which the comms panel paints verbatim.</summary>
-        private static bool Emit(Rule r, string kind, string now, string why)
-        {
-            try
-            {
-                JObject e = new JObject();
-                e["k"] = "event";
-                e["watchId"] = r.Id;
-                e["kind"] = kind;
-                e["unitId"] = r.UnitId;
-                e["field"] = r.Field;
-                e["op"] = r.Op;
-                e["want"] = r.Value;
-                e["now"] = now;
-                if (why != null) e["why"] = why;
-                e["hits"] = r.Hits;
-                e["at"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-                e["from"] = "trigger";
-                AppendOutbox(e.ToString(Formatting.None));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Core.Log("watch emit failed: " + ex.GetType().Name + ": " + ex.Message);
-                return false;
-            }
-        }
-
-        /// <summary>The outbox is the harness-facing queue; harness_link.js reads it line by line
-        /// and has the lock, the byte cursor and the tri-state delivery record. Reusing it means a
-        /// trigger inherits that honesty instead of inventing a second, quieter channel.</summary>
-        private static void AppendOutbox(string line)
-        {
-            string dir = System.IO.Path.Combine(Core.ModDir(), "comms");
-            System.IO.Directory.CreateDirectory(dir);
-            string file = System.IO.Path.Combine(dir, "outbox.jsonl");
-            System.IO.File.AppendAllText(file, line + System.Environment.NewLine, Encoding.UTF8);
-        }
-
-        private static JObject Describe(Rule r)
-        {
-            JObject o = new JObject();
-            o["watch_id"] = r.Id;
-            o["unit_id"] = r.UnitId;
-            o["field"] = r.Field;
-            o["op"] = r.Op;
-            o["value"] = r.Value;
-            o["once"] = r.Once;
-            o["hits"] = r.Hits;
-            o["created"] = r.CreatedUtc;
-            o["expires_at_unix"] = r.ExpiresAt > 0 ? (JToken)r.ExpiresAt : JValue.CreateNull();
-            o["last_value"] = r.LastValue;
-            o["world_generation"] = r.WorldGeneration;
-            return o;
-        }
-
-        private static JObject Ok(JToken data)
-        {
-            JObject o = new JObject();
-            o["ok"] = true;
-            o["data"] = data;
-            return o;
-        }
-
-        private static JObject Fail(string code, string message, bool retryable)
-        {
-            JObject o = new JObject();
-            o["ok"] = false;
-            JObject err = new JObject();
-            err["code"] = code;
-            err["message"] = message;
-            err["retryable"] = retryable;
-            o["error"] = err;
-            return o;
-        }
-
-        private static string ReqText(JObject req, string name)
-        {
-            JToken t = req == null ? null : req[name];
-            if (t == null || t.Type == JTokenType.Null) return "";
-            return t.ToString().Trim();
-        }
-
-        private static double NowSeconds()
-        {
-            return (DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-        }
-
-        private static string SafeString(Func<string> f, string fallback)
-        {
-            try { return f() ?? fallback; } catch (Exception) { return fallback; }
-        }
-
-        /// <summary>Find a unit by id without any intel policy: layer 1 answers in truth and the
-        /// caller above decides what a player is allowed to see.</summary>
-        private static object FindUnit(string unitId)
-        {
-            int want;
-            if (!int.TryParse(unitId, NumberStyles.Integer, CultureInfo.InvariantCulture, out want)) return null;
+            int wanted;
+            bool numeric = int.TryParse(unitKey, NumberStyles.Integer, CultureInfo.InvariantCulture, out wanted);
             foreach (object o in Api.AllObjectsForWatch())
             {
                 if (o == null) continue;
-                foreach (string name in new string[] { "UniqueID", "UniqueId", "uniqueID", "uniqueId", "UnitId", "unitId", "_uniqueId", "_uniqueID" })
+                object id = GameReflect.Member(o, "UniqueID");
+                if (id == null) id = GameReflect.Member(o, "UniqueId");
+                if (id == null) id = GameReflect.Member(o, "uniqueID");
+                if (id == null) continue;
+                if (string.Equals(AsText(id), unitKey, StringComparison.Ordinal)) return o;
+                if (numeric)
                 {
-                    object v = GameReflect.Member(o, name);
-                    if (v == null) continue;
-                    int id;
-                    try { id = Convert.ToInt32(v, CultureInfo.InvariantCulture); }
-                    catch (Exception) { continue; }
-                    if (id == want) return o;
+                    double n = AsNumber(id);
+                    if (!double.IsNaN(n) && Math.Abs(n - wanted) < 0.0001) return o;
                 }
             }
             return null;
         }
 
-        private static bool MemberExists(object unit, string name)
+        private static Reader ResolveReader(object unit, string field)
         {
-            System.Reflection.BindingFlags f = System.Reflection.BindingFlags.Public |
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            Reader r = new Reader();
             Type t = unit.GetType();
-            while (t != null && t != typeof(object))
+            while (t != null && !r.Exists)
             {
-                if (t.GetField(name, f) != null) return true;
-                if (t.GetProperty(name, f) != null) return true;
+                r.Field = t.GetField(field, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (r.Field == null)
+                {
+                    PropertyInfo p = t.GetProperty(field, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (p != null && p.CanRead && p.GetIndexParameters().Length == 0) r.Property = p;
+                }
                 t = t.BaseType;
             }
-            return false;
+            return r;
+        }
+
+        // ------------------------------------------------------------ sampling
+
+        /// <summary>Called from Bridge.Update on the main thread.</summary>
+        public static void Tick()
+        {
+            lock (Gate)
+            {
+                if (Rules.Count == 0) return;
+                double now = Now;
+                if (_lastSample >= 0 && now - _lastSample < SampleIntervalSeconds)
+                {
+                    RetryFrozen();
+                    return;
+                }
+                _lastSample = now;
+                _genStamp = CurrentGeneration();
+
+                Dictionary<string, string> shared = new Dictionary<string, string>();
+                Dictionary<string, bool> readable = new Dictionary<string, bool>();
+
+                for (int i = Rules.Count - 1; i >= 0; i--)
+                {
+                    Rule r = Rules[i];
+                    if (r.Frozen)
+                    {
+                        if (DeliverFrozen(r)) Rules.RemoveAt(i);
+                        continue;
+                    }
+                    if (r.ExpiresAt > 0 && now >= r.ExpiresAt)
+                    {
+                        Emit(r, "expired", "deadline reached", r.LastValueRaw);
+                        Rules.RemoveAt(i);
+                        continue;
+                    }
+                    if (!string.Equals(r.WorldGeneration, _genStamp, StringComparison.Ordinal))
+                    {
+                        Emit(r, "expired", "the world was rebuilt; the observation ended with generation " + r.WorldGeneration, r.LastValueRaw);
+                        Rules.RemoveAt(i);
+                        continue;
+                    }
+                    if (!ObjectStillBound(r))
+                    {
+                        Emit(r, "expired", "the bound object is gone; nothing is re-bound by id", r.LastValueRaw);
+                        Rules.RemoveAt(i);
+                        continue;
+                    }
+
+                    string key = r.UnitKey + "|" + r.Field;
+                    bool ok;
+                    string raw;
+                    if (shared.ContainsKey(key))
+                    {
+                        raw = shared[key];
+                        ok = readable[key];
+                    }
+                    else
+                    {
+                        object v = r.Reader.Read(r.Unit);
+                        ok = v != null || r.Reader.Exists;
+                        raw = AsText(v);
+                        shared[key] = raw;
+                        readable[key] = ok;
+                    }
+                    if (!ok)
+                    {
+                        Emit(r, "unreadable", "the field could not be read", null);
+                        continue;
+                    }
+                    r.LastValueRaw = raw;
+
+                    bool hit;
+                    if (!Evaluate(r, out hit, out raw))
+                    {
+                        Emit(r, "unreadable", "the value is not comparable to what was asked", raw);
+                        continue;
+                    }
+                    if (!hit) { r.PrevHit = false; continue; }
+
+                    // Report the transition, not the state: a predicate that stays true must not
+                    // append a line every sample.
+                    bool rising = r.Mode == "edge" || !r.PrevHit;
+                    r.PrevHit = true;
+                    if (!rising) continue;
+                    if (r.Mode == "edge") r.BaselineRaw = raw;
+                    HitsAndMaybeFreeze(r, r.Mode == "edge" ? "changed" : "hit", raw);
+                    if (r.Frozen && DeliverFrozen(r)) Rules.RemoveAt(i);
+                }
+            }
+        }
+
+        private static void RetryFrozen()
+        {
+            for (int i = Rules.Count - 1; i >= 0; i--)
+            {
+                if (!Rules[i].Frozen) continue;
+                if (DeliverFrozen(Rules[i])) Rules.RemoveAt(i);
+            }
+        }
+
+        private static bool ObjectStillBound(Rule r)
+        {
+            if (r.Unit == null) return false;
+            object id = GameReflect.Member(r.Unit, "UniqueID");
+            if (id == null) id = GameReflect.Member(r.Unit, "UniqueId");
+            if (id == null) id = GameReflect.Member(r.Unit, "uniqueID");
+            if (id == null) return false;
+            return string.Equals(AsText(id), r.UnitKey, StringComparison.Ordinal);
+        }
+
+        /// <summary>False only when the very thing asked about cannot be compared.</summary>
+        private static bool Evaluate(Rule r, out bool hit, out string raw)
+        {
+            hit = false;
+            object value = r.Reader.Read(r.Unit);
+            raw = AsText(value);
+
+            if (r.Mode == "edge")
+            {
+                if (value == null) hit = r.HadBaseline;
+                else hit = !string.Equals(raw, r.BaselineRaw, StringComparison.Ordinal);
+                return true;
+            }
+
+            if (r.Op == "exists")
+            {
+                hit = value != null;
+                return true;
+            }
+            if (value == null) return false;
+
+            double have = AsNumber(value);
+            if (!r.HasWant) return false;
+            if (double.IsNaN(have) || double.IsNaN(r.Want))
+            {
+                if (r.Op == "gt" || r.Op == "lt") return false;
+                bool same = string.Equals(raw, r.WantRaw, StringComparison.OrdinalIgnoreCase);
+                hit = r.Op == "eq" ? same : !same;
+                return true;
+            }
+            if (r.Op == "eq") hit = Math.Abs(have - r.Want) < 0.0001;
+            else if (r.Op == "ne") hit = Math.Abs(have - r.Want) >= 0.0001;
+            else if (r.Op == "gt") hit = have > r.Want;
+            else if (r.Op == "lt") hit = have < r.Want;
+            return true;
+        }
+
+        private static void HitsAndMaybeFreeze(Rule r, string kind, string raw)
+        {
+            r.Hits++;
+            if (!r.Once)
+            {
+                Emit(r, kind, null, raw);
+                return;
+            }
+            r.Frozen = true;
+            r.FrozenJson = EventJson(r, kind, null, raw);
+        }
+
+        private static bool DeliverFrozen(Rule r)
+        {
+            if (r.FrozenJson == null) return false;
+            if (!AppendOutbox(r.FrozenJson)) return false;
+            r.FrozenJson = null;
+            r.Frozen = false;
+            r.Removed = "delivered";
+            return true;
+        }
+
+        private static void Emit(Rule r, string kind, string reason, string raw)
+        {
+            AppendOutbox(EventJson(r, kind, reason, raw));
+        }
+
+        private static string EventJson(Rule r, string kind, string reason, string raw)
+        {
+            JObject e = new JObject();
+            e["k"] = "event";
+            e["from"] = "trigger";
+            e["event_id"] = "e" + (++_eventSeq).ToString(CultureInfo.InvariantCulture);
+            e["watch_id"] = r.WatchId;
+            e["kind"] = kind;
+            e["evidence"] = kind == "hit" || kind == "changed";
+            e["unit_id"] = r.UnitKey;
+            e["field"] = r.Field;
+            e["mode"] = r.Mode;
+            e["op"] = r.Op;
+            if (r.HasWant) e["want"] = r.WantRaw;
+            if (raw != null) e["value"] = raw;
+            if (r.Mode == "edge" && r.BaselineRaw != null) e["baseline"] = r.BaselineRaw;
+            e["world_generation"] = r.WorldGeneration;
+            e["hits"] = r.Hits;
+            e["at"] = Now;
+            if (reason != null) e["reason"] = reason;
+            return e.ToString(Formatting.None);
+        }
+
+        private static bool AppendOutbox(string line)
+        {
+            try
+            {
+                string dir = Path.Combine(Core.ModDir(), "comms");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                string file = Path.Combine(dir, "outbox.jsonl");
+                using (FileStream fs = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    using (StreamWriter w = new StreamWriter(fs, new UTF8Encoding(false)))
+                    {
+                        w.Write(line);
+                        w.Write('\n');
+                        w.Flush();
+                    }
+                    fs.Flush(true);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Core.Log("watch outbox append failed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // ------------------------------------------------------------ queries
+
+        private static JObject List()
+        {
+            JObject o = new JObject();
+            o["count"] = Rules.Count;
+            o["max"] = MaxRules;
+            o["sample_interval_s"] = SampleIntervalSeconds;
+            o["world_generation"] = _genStamp;
+            JArray arr = new JArray();
+            foreach (Rule r in Rules) arr.Add(Describe(r));
+            o["rules"] = arr;
+            JObject sem = new JObject();
+            sem["evidence_kinds"] = new JArray(new object[] { "hit", "changed" });
+            sem["not_evidence"] = new JArray(new object[] { "unreadable", "missing", "unknown", "expired" });
+            o["semantics"] = sem;
+            return o;
+        }
+
+        private static JObject One(string id)
+        {
+            foreach (Rule r in Rules)
+                if (string.Equals(r.WatchId, id, StringComparison.OrdinalIgnoreCase)) return Describe(r);
+            throw new ApiException(404, "watch_not_found", "no trigger " + id, false);
+        }
+
+        private static JObject Remove(string id)
+        {
+            for (int i = 0; i < Rules.Count; i++)
+            {
+                if (!string.Equals(Rules[i].WatchId, id, StringComparison.OrdinalIgnoreCase)) continue;
+                Rule r = Rules[i];
+                Rules.RemoveAt(i);
+                JObject o = Describe(r);
+                o["removed"] = "by operator";
+                return o;
+            }
+            throw new ApiException(404, "watch_not_found", "no trigger " + id, false);
+        }
+
+        private static JObject Describe(Rule r)
+        {
+            JObject o = new JObject();
+            o["watch_id"] = r.WatchId;
+            o["unit_id"] = r.UnitKey;
+            o["field"] = r.Field;
+            o["mode"] = r.Mode;
+            o["op"] = r.Op;
+            if (r.HasWant) o["want"] = r.WantRaw;
+            o["once"] = r.Once;
+            o["hits"] = r.Hits;
+            o["created_at"] = r.CreatedAt;
+            o["expires_at"] = r.ExpiresAt > 0 ? (JToken)r.ExpiresAt : JValue.CreateNull();
+            o["world_generation"] = r.WorldGeneration;
+            o["reader"] = r.Reader.Exists ? (JToken)"member" : JValue.CreateNull();
+            o["frozen"] = r.Frozen;
+            if (r.Removed != null) o["removed"] = r.Removed;
+            return o;
+        }
+
+        // ------------------------------------------------------------ helpers
+
+        private static double Now
+        {
+            get { return (DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds; }
         }
 
         private static string CurrentGeneration()
         {
-            return SafeString(delegate { return Api.WorldGenerationForWatch(); }, "unknown");
+            try { return Api.WorldGenerationForWatch(); }
+            catch (Exception) { return "unknown"; }
         }
 
-        /// <summary>Evaluation cadence. Every frame is needless: the world moves at human speed
-        /// and each rule costs a reflection read (+ a file append when it fires).</summary>
-        private const double EvalIntervalSeconds = 0.2;
-        private static double _lastEval;
-
-        private static string ReadAsText(object unit, string field, out string why)
+        private static string ReqText(JObject o, string name)
         {
-            why = "";
-            if (unit == null) { why = "the unit object is gone"; return null; }
-            try
+            if (o == null) return null;
+            JToken t = o[name];
+            if (t == null || t.Type == JTokenType.Null) return null;
+            return t.ToString();
+        }
+
+        private static double TryNumber(JObject o, string name, double fallback)
+        {
+            if (o == null) return fallback;
+            JToken t = o[name];
+            if (t == null || t.Type == JTokenType.Null) return fallback;
+            double d;
+            if (double.TryParse(t.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out d)) return d;
+            return fallback;
+        }
+
+        private static string AsText(object v)
+        {
+            if (v == null) return null;
+            IConvertible c = v as IConvertible;
+            if (c != null)
             {
-                object v = GameReflect.Member(unit, field);
-                if (v == null)
-                {
-                    // Property, then field, then the two boolean spellings the game uses.
-                    foreach (string alt in new string[] { field.ToLowerInvariant(), "is" + field, "_" + field, field + "Flag" })
-                    {
-                        v = GameReflect.Member(unit, alt);
-                        if (v != null) break;
-                    }
-                }
-                if (v == null)
-                {
-                    // exists must answer yes and changes must see the null -> value edge; a
-                    // missing member is the only thing that is genuinely unreadable.
-                    if (MemberExists(unit, field)) return "null";
-                    why = "no readable member named '" + field + "'";
-                    return null;
-                }
-                if (v is bool) return ((bool)v) ? "true" : "false";
-                if (v is string) return (string)v;
-                IFormattable f = v as IFormattable;
-                if (f != null) return f.ToString(null, CultureInfo.InvariantCulture);
-                return v.ToString();
+                try { return c.ToString(CultureInfo.InvariantCulture); }
+                catch (Exception) { }
             }
-            catch (Exception e)
-            {
-                why = e.GetType().Name + ": " + e.Message;
-                return null;
-            }
+            return v.ToString();
+        }
+
+        private static double AsNumber(object v)
+        {
+            if (v == null) return double.NaN;
+            if (v is double) return (double)v;
+            if (v is float) return (float)v;
+            if (v is int) return (int)v;
+            if (v is long) return (long)v;
+            if (v is bool) return ((bool)v) ? 1 : 0;
+            string s = AsText(v);
+            double d;
+            if (s != null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out d)) return d;
+            return double.NaN;
         }
     }
 }
