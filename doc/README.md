@@ -31,7 +31,7 @@
 | `src/MapView.cs` `MapUnits.cs` `MapPlot.cs` `MapDraw.cs` | 地图与图元 | 原样 |
 | `src/Shots.cs` | 截图（与武器无关，名字是历史包袱） | 原样 |
 | `src/ConsoleHost.cs` `InspectorWindow.cs` `InspectorBridge.cs` `CommsWindow.cs` `Strings.cs` | 游戏内 UI 单壳两页 | 原样 |
-| **`src/Watch.cs`** | **原生触发器注册表 + 主线程求值** | **新增**，见 `TRIGGERS.md` |
+| **`src/Watch.cs`** | **原生触发器注册表 + 主线程求值** | **新增**，见 `layer1_bridge.md` |
 
 ## 3. 线程模型（改动这一层前必读）
 
@@ -91,4 +91,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Deploy    # 部�
 5. `GET /watch` 确认规则在；等 0.5 s 看 `hits` 不变（说明求值在跑但不误报）。
 6. 打沉该单位（或用调试手段置位）→ `comms/outbox.jsonl` 出现 `k:"event"` 行；`GET /watch/1` 的 `hits` 变 1；`once:true` 时规则自动消失。
 7. 读一条不存在的字段注册 → `field_unreadable`；注册不存在的单位 → `unit_not_found`。
-8. 读档后 `GET /watch` → 旧规则的 `world_generation` 与新 `worldGeneration` 不同，按 §`TRIGGERS.md` 的规则处理。
+8. 读档后 `GET /watch` → 旧规则的 `world_generation` 与新 `worldGeneration` 不同，按 §`layer1_bridge.md` 的规则处理。
+
+## 审查修复记录（对第一版 `Watch.cs` 的 6 条意见）
+
+| # | 意见 | 处理 |
+|---|---|---|
+| P1 | 查单位漏掉游戏实际用的 `UniqueID` | 候选名单加入 `UniqueID`/`uniqueID`（大写 ID） |
+| P1 | 读档后复用 id 的旧规则会打到新单位 | 每 tick 比对 `world_generation`，不一致即注销并推 `expired`（原因写明代号变化） |
+| P1 | outbox 写失败仍消耗一次性规则 | `Emit` 返回是否真写入；`once` 只在**投递成功**后注销，失败保留重试 |
+| P2 | `null` 与读不到被合并，破坏 `exists`/`changes` | 新增 `MemberExists`（沿基类查 field/property）：成员存在但值为 null → 值 `"null"`，只有成员缺失才算不可读 |
+| P2 | `changes` 事件不计数、不注销 `once` | `changed` 与 `hit` 同样计入 `hits` 并触发 `once` 注销 |
+| P2 | 只改插件 id 仍无法与 legacy 同时跑 | 端口从 19080 改为 **19081**（v2 默认），并在文档标注 |
+
+**顺带修掉的运行成本问题（文档偏差的根因）**：原实现每帧求值、且条件持续为真时**每帧追加一行 outbox**。现在：
+- 求值节流 **0.2 s**（`EvalIntervalSeconds`）；
+- 命中改为**边沿触发**（条件由假变真才报一次，持续为真不重复）；
+- 文档里"每 0.5 秒求值"一并改为"0.2 秒节流 + 边沿触发"。
+
+**仍然存在的局限**（未修，别当已解决）：上层消费者还没写（`k:"event"` 行目前只有文件没有读者）；`crosses` 依赖采样、两帧间穿越再返回会漏；`changes` 无死区；`FindUnit` 仍是线性扫描。

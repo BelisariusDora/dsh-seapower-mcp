@@ -239,7 +239,7 @@ namespace SeaPowerAgentBridge
     /// </summary>
     public static class Core
     {
-        public static readonly int Port = 19080;
+        public static readonly int Port = 19081;
 
         public const int MaxQueue = 128;
 

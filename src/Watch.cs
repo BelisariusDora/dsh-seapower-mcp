@@ -38,6 +38,8 @@ namespace SeaPowerAgentBridge
             public bool Removed;
             public string LastValue;
             public string WorldGeneration;
+            public bool PrevHit;
+            public bool PrevKnown;
         }
 
         public const int MaxRules = 64;
@@ -218,13 +220,25 @@ namespace SeaPowerAgentBridge
             {
                 if (!Core.IsMain) return;
                 double now = NowSeconds();
+                if (now - _lastEval < EvalIntervalSeconds) return;
+                _lastEval = now;
                 List<Rule> due = null;
+                string gen = CurrentGeneration();
                 lock (Gate)
                 {
                     for (int i = Rules.Count - 1; i >= 0; i--)
                     {
                         Rule r = Rules[i];
                         if (r.Removed) { Rules.RemoveAt(i); continue; }
+                        if (r.WorldGeneration != "unknown" && gen != "unknown" &&
+                            !string.Equals(r.WorldGeneration, gen, StringComparison.Ordinal))
+                        {
+                            // Every id in this rule now means a different object.
+                            r.Removed = true;
+                            Rules.RemoveAt(i);
+                            Emit(r, "expired", null, "the world was rebuilt (" + r.WorldGeneration + " -> " + gen + ")");
+                            continue;
+                        }
                         if (r.ExpiresAt > 0 && now > r.ExpiresAt)
                         {
                             r.Removed = true;
@@ -270,7 +284,11 @@ namespace SeaPowerAgentBridge
                         r.LastValue = nowText;
                         continue;
                     }
-                    if (hit) Fire(r, "hit", nowText, null);
+                    // Edge triggered: a permanent eq rule used to append one outbox line per
+                    // frame while it stayed true, which is both a log flood and real main-thread
+                    // cost (reflection + file append inside the frame loop).
+                    if (hit && !r.PrevHit) Fire(r, "hit", nowText, null);
+                    r.PrevHit = hit;
                     r.LastValue = nowText;
                 }
             }
@@ -320,10 +338,12 @@ namespace SeaPowerAgentBridge
 
         private static void Fire(Rule r, string kind, string now, string why)
         {
-            bool wasHit = kind == "hit";
+            bool wasHit = kind == "hit" || kind == "changed";
             if (wasHit) r.Hits++;
-            Emit(r, kind, now, why);
-            if (r.Once && wasHit)
+            bool delivered = Emit(r, kind, now, why);
+            // Retiring a once-rule whose line never reached the outbox loses the only chance to
+            // report it. Keep it and try again next evaluation.
+            if (r.Once && wasHit && delivered)
             {
                 r.Removed = true;
                 lock (Gate) Rules.Remove(r);
@@ -333,7 +353,7 @@ namespace SeaPowerAgentBridge
 
         /// <summary>One line into the outbox the harness already polls. k:"event" keeps trigger
         /// traffic apart from the player's chat, which the comms panel paints verbatim.</summary>
-        private static void Emit(Rule r, string kind, string now, string why)
+        private static bool Emit(Rule r, string kind, string now, string why)
         {
             try
             {
@@ -351,10 +371,12 @@ namespace SeaPowerAgentBridge
                 e["at"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
                 e["from"] = "trigger";
                 AppendOutbox(e.ToString(Formatting.None));
+                return true;
             }
             catch (Exception ex)
             {
                 Core.Log("watch emit failed: " + ex.GetType().Name + ": " + ex.Message);
+                return false;
             }
         }
 
@@ -432,7 +454,7 @@ namespace SeaPowerAgentBridge
             foreach (object o in Api.AllObjectsForWatch())
             {
                 if (o == null) continue;
-                foreach (string name in new string[] { "UniqueId", "uniqueId", "UnitId", "unitId", "_uniqueId" })
+                foreach (string name in new string[] { "UniqueID", "UniqueId", "uniqueID", "uniqueId", "UnitId", "unitId", "_uniqueId", "_uniqueID" })
                 {
                     object v = GameReflect.Member(o, name);
                     if (v == null) continue;
@@ -444,6 +466,30 @@ namespace SeaPowerAgentBridge
             }
             return null;
         }
+
+        private static bool MemberExists(object unit, string name)
+        {
+            System.Reflection.BindingFlags f = System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            Type t = unit.GetType();
+            while (t != null && t != typeof(object))
+            {
+                if (t.GetField(name, f) != null) return true;
+                if (t.GetProperty(name, f) != null) return true;
+                t = t.BaseType;
+            }
+            return false;
+        }
+
+        private static string CurrentGeneration()
+        {
+            return SafeString(delegate { return Api.WorldGenerationForWatch(); }, "unknown");
+        }
+
+        /// <summary>Evaluation cadence. Every frame is needless: the world moves at human speed
+        /// and each rule costs a reflection read (+ a file append when it fires).</summary>
+        private const double EvalIntervalSeconds = 0.2;
+        private static double _lastEval;
 
         private static string ReadAsText(object unit, string field, out string why)
         {
@@ -461,7 +507,14 @@ namespace SeaPowerAgentBridge
                         if (v != null) break;
                     }
                 }
-                if (v == null) { why = "no readable member named '" + field + "'"; return null; }
+                if (v == null)
+                {
+                    // exists must answer yes and changes must see the null -> value edge; a
+                    // missing member is the only thing that is genuinely unreadable.
+                    if (MemberExists(unit, field)) return "null";
+                    why = "no readable member named '" + field + "'";
+                    return null;
+                }
                 if (v is bool) return ((bool)v) ? "true" : "false";
                 if (v is string) return (string)v;
                 IFormattable f = v as IFormattable;
