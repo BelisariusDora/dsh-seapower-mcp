@@ -10,7 +10,7 @@
 
 接入 MCP 后，AI 可以按玩家指示读取战场、下达命令和进行图上作业。 / With MCP connected, an AI assistant can inspect the battlefield, issue orders, and work on the tactical map at the player's direction.
 
-| 作业 / Area | 中文 | English |
+| 作业 / Area | | |
 |---|---|---|
 | **态势感知 / Situational awareness** | 查询己方编组、单位和接触航迹，读取航路、弹药、武器射程、飞行甲板和潜艇状态。 | Inspect friendly task forces, units, and contact tracks. Read routes, magazines, weapon ranges, flight decks, and submarine status. |
 | **舰队指挥 / Fleet command** | 对单舰或编组下达航速、航向和航路命令，管理雷达、声呐和电磁管制，校验交战条件并下达攻击或停火指令。 | Set speed, course, and waypoints for individual ships or groups. Manage radar, sonar, and EMCON. Validate engagements and issue attack or ceasefire orders. |
@@ -22,13 +22,12 @@
 
 ## 安装并接入 MCP / Install and connect MCP
 
-1. 安装 [AnchorChain Preloader 和 Workshop 模组](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html)。
-2. 关闭游戏，解压 Alpha ZIP，将 `dsh-spmcp` 放入 `Sea Power_Data/StreamingAssets`。详细步骤见包内 `INSTALL.md`。
-3. 启动游戏并载入场景。在支持本地 stdio MCP 的 AI 客户端里添加服务，让客户端启动 Python 脚本。
-
-1. Install the [AnchorChain Preloader and Workshop mod](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html).
-2. Close the game, extract the Alpha ZIP, and place `dsh-spmcp` in `Sea Power_Data/StreamingAssets`. See `INSTALL.md` in the ZIP for details.
-3. Start the game and load a scenario. Add the server to an AI client that supports local MCP over stdio so the client can launch the Python script.
+1. 安装 [AnchorChain Preloader 和 Workshop 模组](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html)。<br>
+   Install the [AnchorChain Preloader and Workshop mod](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html).
+2. 关闭游戏，解压 Alpha ZIP，将 `dsh-spmcp` 放入 `Sea Power_Data/StreamingAssets`。详细步骤见包内 `INSTALL.md`。<br>
+   Close the game, extract the Alpha ZIP, and place `dsh-spmcp` in `Sea Power_Data/StreamingAssets`. See `INSTALL.md` in the ZIP for details.
+3. 启动游戏并载入场景。在支持本地 stdio MCP 的 AI 客户端里添加服务，让客户端启动 Python 脚本。<br>
+   Start the game and load a scenario. Add the server to an AI client that supports local MCP over stdio so the client can launch the Python script.
 
 使用 `mcpServers` 格式的客户端可以复制以下配置。把路径换成实际安装位置。如果客户端找不到 `python`，将 `command` 换成 Python 可执行文件的绝对路径。
 
@@ -53,13 +52,12 @@ MCP uses **stdio**. The Python adapter connects to the in-game bridge at `127.0.
 
 ## AI 调用指南 / AI tool usage
 
-1. 通过 MCP 的 `tools/list` 获取当前工具名和参数 schema。
-2. 调用 `sp_ping({})` 检查游戏桥接，再用 `sp_session_fleet({})` 或 `sp_units({"side":"mine"})` 获取本局的单位 ID。读档或换场景后重新获取 ID。
-3. 用 `sp_unit` 读取目标单位详情。按玩家意图选择对应工具提交命令，并在后续读取中核实游戏状态。命令回执为 `submitted` 表示已提交。若回执包含 `uncertain:true` 或 `resend:"forbidden"`，先读回状态核实，再决定下一步。
-
-1. Use MCP `tools/list` to discover the available tools and their parameter schemas.
-2. Call `sp_ping({})` to check the bridge, then call `sp_session_fleet({})` or `sp_units({"side":"mine"})` to obtain unit IDs for the current session. Refresh IDs after loading a save or changing scenarios.
-3. Use `sp_unit` to inspect the intended unit. Choose the tool that matches the player's request, submit the order, and read back the game state. A `submitted` receipt confirms submission. If a reply contains `uncertain:true` or `resend:"forbidden"`, verify the state before taking further action.
+1. 通过 MCP 的 `tools/list` 获取当前工具名和参数 schema。<br>
+   Use MCP `tools/list` to discover the available tools and their parameter schemas.
+2. 调用 `sp_ping({})` 检查游戏桥接，再用 `sp_session_fleet({})` 或 `sp_units({"side":"mine"})` 获取本局的单位 ID。读档或换场景后重新获取 ID。<br>
+   Call `sp_ping({})` to check the bridge, then call `sp_session_fleet({})` or `sp_units({"side":"mine"})` to obtain unit IDs for the current session. Refresh IDs after loading a save or changing scenarios.
+3. 用 `sp_unit` 读取目标单位详情。按玩家意图选择对应工具提交命令，并在后续读取中核实游戏状态。命令回执为 `submitted` 表示已提交。若回执包含 `uncertain:true` 或 `resend:"forbidden"`，先读回状态核实，再决定下一步。<br>
+   Use `sp_unit` to inspect the intended unit. Choose the tool that matches the player's request, submit the order, and read back the game state. A `submitted` receipt confirms submission. If a reply contains `uncertain:true` or `resend:"forbidden"`, verify the state before taking further action.
 
 试用提示词 / Example prompt
 
