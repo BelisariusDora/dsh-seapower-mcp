@@ -401,7 +401,7 @@ private static void HandleClient(object state)
                 return req;
             }
 
-            if (req.Method != "GET" && req.Method != "POST" && req.Method != "OPTIONS" && req.Method != "HEAD")
+            if (req.Method != "GET" && req.Method != "POST" && req.Method != "OPTIONS" && req.Method != "HEAD" && req.Method != "DELETE")
             {
                 req.Status = 405;
                 req.Error = "method_not_allowed";
@@ -637,7 +637,7 @@ private static void HandleClient(object state)
             if (code == "bad_utf8") return "request body is not valid UTF-8";
             if (code == "missing_content_type") return "a request with a body must declare Content-Type: application/json";
             if (code == "unsupported_content_type") return "only application/json bodies are accepted";
-            if (code == "method_not_allowed") return "only GET, POST, OPTIONS and HEAD are allowed";
+            if (code == "method_not_allowed") return "only GET, POST, OPTIONS, HEAD and DELETE are allowed";
             if (code == "empty_request") return "connection closed before a request arrived";
             if (code == "bad_request_line") return "malformed HTTP request line";
             if (code == "bad_http_version") return "malformed HTTP version";

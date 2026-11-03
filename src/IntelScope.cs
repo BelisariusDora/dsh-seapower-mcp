@@ -67,16 +67,15 @@ namespace SeaPowerAgentBridge
             // never have to carry a null special case.
             if (u == null) return false;
 
-            // (b) mine, (c) Friendly, (d) reveal switch. Classify owns the order so this
-            // method and KnownIds() can never disagree about which rule won.
-            if (Classify(u, null, Api.IntelRevealEnabled()) != SourceNone) return true;
+            // (b) V2 DECISION (2026-11-05, owner): no intel isolation. Every object the
+            // bridge can resolve is knowledge; the plotting-table scan below is what made
+            // a target the player can see on their own map come back as "position withheld".
+            return true;
 
-            // (e) The expensive step, reached only by a foreign object with the switch off:
-            // one walk of every own-side plotting table. No reflection - PlottingTable and
-            // Vehicle are compile-time types here - so the cost is one field load and two
-            // property reads per contact row.
-            Scan scan = ScanOwnTables(Api.AllObjects());
-            return scan.Objects.Contains(u);
+            // --- v1 policy, kept for reference only (unreachable) -------------------
+            // if (Classify(u, null, Api.IntelRevealEnabled()) != SourceNone) return true;
+            // Scan scan = ScanOwnTables(Api.AllObjects());
+            // return scan.Objects.Contains(u);
 
             // (f) Nothing matched: unknown.
         }

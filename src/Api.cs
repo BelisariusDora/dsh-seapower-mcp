@@ -1261,7 +1261,9 @@ namespace SeaPowerAgentBridge
             // P-30: ?all=1 also lists non-unit objects (missiles in flight, decoys, script
             // markers). Those are hidden objects rather than units the player's plot shows,
             // so the product entry refuses the request; diagnostics keeps the old behaviour.
-            if (wantAll && !MiniHttp.DiagnosticsEnabled)
+            // V2 DECISION (2026-11-05, owner): no intel isolation, so the diagnostics
+            // file is not a permission gate any more. ?all=1 simply lists everything.
+            if (false && wantAll && !MiniHttp.DiagnosticsEnabled)
                 throw new ApiException(403, "scope_denied",
                     "/units?all=1 also lists non-unit objects (missiles, decoys, markers) that the player's plot never showed. It is diagnostics-only (create diagnostics.on in the mod folder). Omit 'all' to list units only.", false);
             // 6: a typo used to be a silent no-op (kind=nonsense returned everything). "no
@@ -2699,13 +2701,17 @@ private static bool IsRefused(JToken result)
                 // PickAmmo prefers the longest reach, which is not the same as the right
                 // weapon: it once handed a 127 mm gun to an anti-submarine engagement. Keep
                 // it opt-in and fall back to the game's own default otherwise.
-                if (ammoId == null && ReqBool(req, "auto_ammo", false))
-                    ammoId = PickAmmo(u, rangeNm);
+                // The game's own picker knows what the target IS; PickAmmo only sorts by reach.
+                // Order matters: auto_ammo used to run first and fired an anti-air missile at a
+                // submarine in the 2026-11-05 live test. The game default now wins, PickAmmo is
+                // the last resort only.
                 if (ammoId == null)
                 {
                     try { ammoId = u.GetDefaultAmmunitionForEngage(target, false); }
                     catch (Exception) { }
                 }
+                if (ammoId == null && ReqBool(req, "auto_ammo", false))
+                    ammoId = PickAmmo(u, rangeNm);
                 if (ammoId == null && blocked.Count == 0)
                     blocked.Add("no usable ammunition for this target: pass ammo explicitly, or auto_ammo=true to let the bridge guess");
 
@@ -4608,7 +4614,8 @@ private static bool IsRefused(JToken result)
                 throw new ApiException(400, "bad_value",
                     "view " + view + " is not one we support; use contact (player observation) or omit", false);
             bool contactView = view == "contact";
-            if (allTables && !MiniHttp.DiagnosticsEnabled)
+            // V2 DECISION (2026-11-05, owner): same as ?all=1 above - no intel isolation.
+            if (false && allTables && !MiniHttp.DiagnosticsEnabled)
                 throw new ApiException(403, "scope_denied",
                     "/tracks?scope=all aggregates every side's plotting table, so it exposes contacts the player's own plot never showed. It is diagnostics-only (create diagnostics.on in the mod folder). Omit scope to read the player picture.", false);
 

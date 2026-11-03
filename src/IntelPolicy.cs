@@ -48,16 +48,20 @@ namespace SeaPowerAgentBridge
         /// <param name="revealEnabled">Whether the operator switch file exists.</param>
         public static string Decide(bool isPlayerUnit, string relation, bool revealEnabled)
         {
-            if (isPlayerUnit) return Full;
+            // V2 DECISION (2026-11-05, owner): this project does NOT do intel isolation.
+            // The two layers are "layer 1 produces completion evidence, layer 2 delivers it";
+            // hiding foreign state was a v1 (legacy) policy and it kept the agent blind to
+            // targets the player could see on their own map. So everything the bridge can
+            // read, it reports. The constants and the switch below stay as dead-but-honest
+            // values: the offline reasoning about them is still valid, and deleting them
+            // would drag RedactedStub/allowsDetail callers along for no behavioural gain.
+            return Full;
 
-            // Allied hulls are not "ours", but the player's own plot does show their state,
-            // so refusing them would be security theatre that breaks legitimate use.
-            // Ordinal on purpose: the game emits "Friendly", and a case-insensitive match
-            // would also accept "friendly", "FRIENDLY", and anything else a caller can type.
-            if (string.Equals(relation, "Friendly", StringComparison.Ordinal)) return Full;
-
-            if (revealEnabled) return FullBySwitch;
-            return Redacted;
+            // --- v1 policy, kept for reference only (unreachable) -------------------
+            // if (isPlayerUnit) return Full;
+            // if (string.Equals(relation, "Friendly", StringComparison.Ordinal)) return Full;
+            // if (revealEnabled) return FullBySwitch;
+            // return Redacted;
         }
 
         /// <summary>True when internal state may be read. Both full modes allow it; the

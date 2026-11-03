@@ -33,6 +33,7 @@ namespace SeaPowerAgentBridge
         private static int _seq;
         private static long _eventSeq;
         private static double _lastSample = -1.0;
+        private static double _lastRetry = -1.0;
         private static string _genStamp = "unknown";
 
         private sealed class Reader
@@ -296,10 +297,17 @@ namespace SeaPowerAgentBridge
                 double now = Now;
                 if (_lastSample >= 0 && now - _lastSample < SampleIntervalSeconds)
                 {
-                    RetryFrozen();
+                    // A hand-over that keeps failing must not retry every frame:
+                    // at most one attempt per sample interval, same event id.
+                    if (now - _lastRetry >= SampleIntervalSeconds)
+                    {
+                        _lastRetry = now;
+                        RetryFrozen();
+                    }
                     return;
                 }
                 _lastSample = now;
+                _lastRetry = now;
                 _genStamp = CurrentGeneration();
 
                 Dictionary<string, string> shared = new Dictionary<string, string>();
@@ -488,14 +496,15 @@ namespace SeaPowerAgentBridge
                 string dir = Path.Combine(Core.ModDir(), "comms");
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 string file = Path.Combine(dir, "outbox.jsonl");
+                // Write the bytes ourselves: a StreamWriter would close the
+                // FileStream on dispose, and the following fs.Flush(true) then
+                // threw ObjectDisposedException *after* the line had reached the
+                // file, so the caller saw a failure for a line already appended
+                // (that is how one frozen event became 6588 identical lines).
+                byte[] bytes = new UTF8Encoding(false).GetBytes(line + "\n");
                 using (FileStream fs = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                 {
-                    using (StreamWriter w = new StreamWriter(fs, new UTF8Encoding(false)))
-                    {
-                        w.Write(line);
-                        w.Write('\n');
-                        w.Flush();
-                    }
+                    fs.Write(bytes, 0, bytes.Length);
                     fs.Flush(true);
                 }
                 return true;
