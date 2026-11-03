@@ -1,4 +1,4 @@
-﻿# spmcp_v2 - layer 1 (game bridge)
+# spmcp_v2 - layer 1 (game bridge)
 
 Migration of the C# game bridge out of `tools/spmcp` (now legacy, untouched).
 Same wire protocol, same AnchorChain entry point, plus a native trigger surface.
@@ -10,6 +10,11 @@ Same wire protocol, same AnchorChain entry point, plus a native trigger surface.
 - `GameReflect.cs` - reflection index and IL stub detection
 - `Watch.cs` - **new**: temporary triggers (`/watch`), evaluated on the 0.5 s tick
 - `CommsBridge.cs` - outbound file channel to the harness (unchanged; triggers append to it)
+
+## Docs
+
+- [doc/README.md](doc/README.md) - layer 1: files, threads, envelope, budgets, gaps
+- [doc/TRIGGERS.md](doc/TRIGGERS.md) - the `/watch` contract in full
 
 ## Triggers
 
