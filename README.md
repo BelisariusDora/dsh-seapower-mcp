@@ -1,5 +1,9 @@
 # Sea Power Agent Bridge
 
+**作者实测，在 Sea Power 中，Codex + GPT‑6.1 Sol 的反应速度和整体表现远优于 DSH + DeepSeek V4.1 flsh 1017。**
+
+**In the author's Sea Power tests, Codex + GPT‑6.1 Sol responded much faster and performed substantially better overall than DSH + DeepSeek V4.1 flsh 1017.**
+
 **把 Sea Power 的战场状态和指挥能力接入 MCP。** 项目提供一个运行在游戏内的桥接插件，以及一个可由 MCP 客户端启动的 Python 转译器。客户端可以读取单位、编组、武器和飞行甲板状态，并通过游戏接口提交航向、航速、航空和交战命令。
 
 **Connect Sea Power's battlefield state and command controls to MCP.** An in-game bridge plugin and a Python adapter let MCP clients inspect units, formations, weapons, and flight decks, then issue navigation, aviation, and engagement orders.
