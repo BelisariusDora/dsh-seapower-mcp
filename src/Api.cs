@@ -1123,8 +1123,38 @@ namespace SeaPowerAgentBridge
             o["unity"] = Core.UnityVersion;
             o["scene"] = Core.SceneName;
             o["inGame"] = Core.InGame;
+            o["build"] = BuildIdentity();
             o["cachedAt"] = "main thread (0.5 s)";
             return o;
+        }
+
+        /// <summary>Which build is loaded, and is the DLL on disk a later one? The whole
+        /// point is that a running game can keep an old assembly while the mod folder has a
+        /// new one, and every symptom of that looks like a bug in the new code.</summary>
+        private static JObject BuildIdentity()
+        {
+            JObject b = new JObject();
+            b["stamp"] = BuildInfo.Stamp;
+            string onDisk = null;
+            string stampFile = null;
+            try
+            {
+                stampFile = System.IO.Path.Combine(Core.ModDir(), "SeaPowerAgentBridge.build");
+                if (System.IO.File.Exists(stampFile))
+                {
+                    string text = System.IO.File.ReadAllText(stampFile).Trim();
+                    int space = text.IndexOf(' ');
+                    onDisk = space > 0 ? text.Substring(0, space) : text;
+                }
+            }
+            catch (Exception) { }
+            if (onDisk != null) b["onDiskStamp"] = onDisk;
+            // No stamp file means an older deploy or a hand copy: say "unknown", never "fresh".
+            b["staleDll"] = onDisk == null ? (bool?)null : onDisk != BuildInfo.Stamp;
+            if (onDisk != null && onDisk != BuildInfo.Stamp)
+                b["hint"] = "the DLL in the mod folder was built later than the one this process loaded: "
+                            + "close the game and start it again, then re-run /ping";
+            return b;
         }
 
         private static JObject State()
@@ -1245,7 +1275,12 @@ namespace SeaPowerAgentBridge
                     throw new ApiException(500, "intel_check_failed",
                         "could not decide whether unit " + id + " is on the player's picture: "
                         + intelError.GetType().Name + ": " + intelError.Message, true);
-                throw new ApiException(404, "unit_not_found", "unit not found: " + id, false);
+                // Wording only: v2 does no intel isolation, so a 404 here means the object is gone,
+                // not that the player may not see it - but a caller that learned the id from a
+                // contact row deserves to hear which of the two happened.
+                throw new ApiException(404, "unit_not_found",
+                    "unit not found: " + id + " (no live object carries this id; ids taken from a track "
+                    + "or a contact are not unit ids - /units lists the ids that are)", false);
             }
             return u;
         }
@@ -3746,6 +3781,22 @@ private static bool IsRefused(JToken result)
 
         private static JToken TimeCommand(JObject req)
         {
+            // The route took only what it knew and ignored the rest, so POST /time {"speed":10}
+            // answered ok:true with compression untouched and the caller believed time was
+            // accelerated. Say which fields this route does not have.
+            if (req != null)
+            {
+                List<string> unknown = new List<string>();
+                foreach (JProperty p in req.Properties())
+                {
+                    if (p.Name != "compression" && p.Name != "paused") unknown.Add(p.Name);
+                }
+                if (unknown.Count > 0)
+                    throw new ApiException(400, "unknown_field",
+                        "POST /time takes only 'compression' and 'paused'; "
+                        + String.Join(", ", unknown.ToArray())
+                        + " is not a field of this route (time acceleration is 'compression', not 'speed')", false);
+            }
             // compression first: SetTimeCompression internally unpauses, so 'paused'
             // has to be applied afterwards or it gets silently overridden.
             if (req["compression"] != null)

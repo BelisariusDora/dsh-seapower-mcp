@@ -65,6 +65,11 @@ namespace SeaPowerAgentBridge
 
         private const int MaxCount = 32;
         private const double CoordTolerance = 1e-5;   // ~1.1 m; the game copies the point verbatim
+        // The waypoint of an AttackAtWaypoint task is NOT copied verbatim: the path code may
+        // snap it. 2e-3 deg is ~220 m, far below anything tactically meaningful and well above
+        // what a snap produces, so a snapped waypoint is reported with its offset instead of
+        // being called a mismatch (2026-11-05: every strategy:"order" drop was refused).
+        private const double WaypointTolerance = 2e-3;
 
         /// <summary>POST /units/{id}/drop_sonobuoy (the router passes {"unit": id, ...}).</summary>
         internal static JObject Drop(JObject req)
@@ -458,8 +463,10 @@ namespace SeaPowerAgentBridge
             if (gotAmmo != ammoId) mismatch.Add("_ammunitionName was '" + Str(gotAmmo) + "'");
             if (gotSalvo != 1) mismatch.Add("_salvo was " + gotSalvo);
             if (hasTargetObject) mismatch.Add("_hasTargetObject was true, so the task is aimed at a unit");
-            if (!GeoNear(waypoint, geo, CoordTolerance))
-                mismatch.Add("_waypointGeoPos does not match the requested point");
+            double wpOffset = GeoOffsetDeg(waypoint, geo);
+            if (!double.IsNaN(wpOffset) && wpOffset > WaypointTolerance)
+                mismatch.Add("_waypointGeoPos is " + wpOffset.ToString("0.00000")
+                             + " deg away from the requested point");
 
             JObject r = new JObject();
             r["kind"] = "AttackAtWaypoint";
@@ -468,6 +475,8 @@ namespace SeaPowerAgentBridge
             r["hasTargetObject"] = hasTargetObject;
             r["isSonobouyDrop"] = isSonobouyDrop;
             r["waypointGeoPosition"] = GeoJson(waypoint);
+            if (double.IsNaN(wpOffset)) r["waypointReadback"] = "unreadable";
+            else r["waypointOffsetDeg"] = wpOffset;
             r["minAltitude"] = GameReflect.Raw(UnboxValue(GameReflect.Member(task, "_minAltitude")));
             r["maxAltitude"] = GameReflect.Raw(UnboxValue(GameReflect.Member(task, "_maxAltitude")));
             r["triggerRange"] = GameReflect.Raw(GameReflect.Member(task, "_triggerRange"));
@@ -729,6 +738,17 @@ namespace SeaPowerAgentBridge
 
         private static double Lat(object geo) { return geo == null ? double.NaN : Convert.ToDouble(GameReflect.Member(geo, "Latitude")); }
         private static double Lon(object geo) { return geo == null ? double.NaN : Convert.ToDouble(GameReflect.Member(geo, "Longitude")); }
+
+        /// <summary>Largest absolute lat/lon difference in degrees, or NaN when the value
+        /// could not be read at all (a struct whose lat/lon members are not what we expect).</summary>
+        private static double GeoOffsetDeg(object geo, GeoPosition want)
+        {
+            if (geo == null || want == null) return double.NaN;
+            double la = Lat(geo);
+            double lo = Lon(geo);
+            if (double.IsNaN(la) || double.IsNaN(lo)) return double.NaN;
+            return Math.Max(Math.Abs(la - Lat(want)), Math.Abs(lo - Lon(want)));
+        }
 
         private static bool GeoNear(object geo, GeoPosition want, double tol)
         {

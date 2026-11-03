@@ -142,3 +142,26 @@ Get-Content 'Sea Power_Data\StreamingAssets\dsh-spmcp-v2\comms\outbox.jsonl' -Ta
 - 文档里"每 0.5 秒求值"一并改为"0.2 秒节流 + 边沿触发"。
 
 **仍然存在的局限**（未修，别当已解决）：上层消费者还没写（`k:"event"` 行目前只有文件没有读者）；`crosses` 依赖采样、两帧间穿越再返回会漏；`changes` 无死区；`FindUnit` 仍是线性扫描。
+
+## Hardening from the 2026-11-05 live test
+
+Three things the live run taught, all fixed in the bridge itself:
+
+- **`GET /ping` now says which build is loaded.** `build.stamp` is the stamp compiled into
+  the assembly; `build.onDiskStamp` is read from `SeaPowerAgentBridge.build` next to the DLL,
+  and `build.staleDll` is true when the file is a later build than the running process. A
+  deploy while the game is open changes the file but not the loaded assembly, and every
+  symptom of that looks like a bug in the new code. `build.ps1` writes the stamp file next to
+  the DLL on every compile and copies it on `-Deploy`.
+- **`POST /units/{id}/sonobuoy {"strategy":"order"}` no longer refuses a snapped waypoint.**
+  The game's path code may move the task's waypoint, so the read-back compares it with a
+  2e-3 deg tolerance and reports `waypointOffsetDeg` (or `waypointReadback:"unreadable"`)
+  instead of calling a 200 m snap a mismatch. `strategy:"direct"` still requires the exact
+  point.
+- **`POST /time` refuses fields it does not take.** `{"speed":10}` used to answer `ok:true`
+  with the clock untouched; it is now `400 unknown_field` naming the accepted fields
+  (`compression`, `paused`).
+
+`GET /units/{id}/weapon_status` still has to be POSTed with `{"status": ...}`; that asymmetry
+is the game's own, not a bug in the bridge. `fire` at a point still drops the whole rack for
+free-fall ammunition; targeting a unit with `attack` is the path that tracks.
