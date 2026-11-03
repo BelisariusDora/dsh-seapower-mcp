@@ -33,9 +33,9 @@
 3. 启动游戏并载入场景。在支持本地 stdio MCP 的 AI 客户端里添加服务，让客户端启动 Python 脚本。<br>
    Start the game and load a scenario. Add the server to an AI client that supports local MCP over stdio so the client can launch the Python script.
 
-使用 `mcpServers` 格式的客户端可以复制以下配置。把路径换成实际安装位置。如果客户端找不到 `python`，将 `command` 换成 Python 可执行文件的绝对路径。
+使用 `mcpServers` 格式的客户端可以复制以下配置。在 `steamapps` 前补上游戏所在的 Steam 库路径，使脚本路径成为绝对路径。如果客户端找不到 `python`，将 `command` 换成 Python 可执行文件的绝对路径。
 
-If your client uses the `mcpServers` format, copy the configuration below and replace the script path with your own. If the client cannot find `python`, set `command` to the absolute path of the Python executable.
+If your client uses the `mcpServers` format, copy the configuration below and prefix `steamapps` with the path to the Steam library that contains the game. Use the resulting absolute script path. If the client cannot find `python`, set `command` to the absolute path of the Python executable.
 
 ```json
 {
@@ -43,7 +43,7 @@ If your client uses the `mcpServers` format, copy the configuration below and re
     "seapower": {
       "command": "python",
       "args": [
-        "E:/steam/steamapps/common/Sea Power/Sea Power_Data/StreamingAssets/dsh-spmcp/mcp_server.py"
+        "steamapps/common/Sea Power/Sea Power_Data/StreamingAssets/dsh-spmcp/mcp_server.py"
       ]
     }
   }
