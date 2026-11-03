@@ -2,7 +2,9 @@
 
 第二层的启动、工具映射和回执约定见 [MCP 转译](layer2_translation.md)。
 
-状态：**已迁移、已编译、未部署、未实机验证**。文档基线对应提交 `5d8457a`。
+部署产物位于游戏的 `StreamingAssets/dsh-spmcp`。通过 `GET /ping` 比对加载中的 build stamp 和磁盘 stamp。
+
+第二层见 [MCP 转译](layer2_translation.md)。
 
 老项目 `tools/spmcp` 从此是 legacy：只读、不再改动，作为行为参照与回退点。
 
@@ -28,7 +30,7 @@
 | `src/GameReflect.cs` | 程序集索引、成员反射、IL 判 stub、异常回传变体 | 原样 |
 | `src/SessionRegistry.cs` | 对局/世界重建分类、`RequireStable` 写闸 | 原样 |
 | `src/CommsBridge.cs` | 游戏→外部（harness）的**出站**文件通道 | 原样 |
-| `src/ContactView.cs` `TrackScope.cs` `IntelScope.cs` `IntelPolicy.cs` | 接触投影与情报策略 | 原样（**仍生效**，见 §6） |
+| `src/ContactView.cs` `TrackScope.cs` `IntelScope.cs` `IntelPolicy.cs` | 接触投影与情报策略 | 保留接口，情报可见性策略已放开（见 §6） |
 | `src/Weapons.cs` `Control.cs` `Sonobuoy.cs` `LandUnits.cs` `LandRead.cs` `UnitTypeGate.cs` | 平台能力与类型闸 | 原样 |
 | `src/MapView.cs` `MapUnits.cs` `MapPlot.cs` `MapDraw.cs` | 地图与图元 | 原样 |
 | `src/Shots.cs` | 截图（与武器无关，名字是历史包袱） | 原样 |
@@ -63,55 +65,25 @@ HTTP → MiniHttp → Api.Dispatch → (Watch.Matches? Watch.Handle : DispatchCo
 2. `/watch` 自己 hop 一次（8000 ms），再在主线程求值。
 3. `GET /shot/png` 返回 PNG 字节，不套信封。
 
-## 6. 与 legacy 的差别（当前仅两条）
+## 6. 当前策略与部署
 
-1. **多了一个 `/watch` 触发器面**（`Watch.cs`，纯新增，不改动任何老路由）。
-2. `build.ps1` 的 `-Deploy` 目标改为 `Sea Power_Data/StreamingAssets/dsh-spmcp-v2`，**不会覆盖 legacy**。
-
-**未完成、必须知道的三件事**：
-
-- **情报闸仍在生效**：`Api.cs` 里 `IntelScope.PlayerKnows` / `IntelPolicy.AllowsDetail` 的调用点全部保留，所以老路由**依然按 legacy 的策略遮蔽**（未知单位 404、航速/弹药可被红标）。只有 `/watch` 是全真观测。按"层一不做策略"的目标，下一步应把这些调用点整体摘掉——**不要删文件**，先摘调用点、验证接口齐全，再删实现，否则会出现"半套策略"，比全有或全无更危险。
-- **插件身份未改**：`Bridge.cs` 仍是 `[ACPlugin("dsh.spmcp.bridge", ...)]`，与 legacy 相同。两个 mod 同时安装会冲突，安装前必须改成 `dsh.spmcp.bridge.v2`（并同步 `_info.ini`）。
-- **未验证**：只做过编译（`645120` 字节）。没有部署、没有开游戏、没有跑过任何一条真实请求。
+第一层按项目决定放开情报隔离。平台能力、命令参数校验和写入闸门仍由桥接层处理。当前部署更新已有的 `dsh-spmcp` 槽位，插件 ID 为 `dsh.spmcp.bridge`，监听端口为 `19080`。
 
 ## 7. 构建与部署
 
 ```powershell
 cd tools\spmcp_v2
 powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1            # 只编译
-powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Deploy    # 部署到 dsh-spmcp-v2（必须先关游戏）
+powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Deploy    # 部署到 dsh-spmcp（必须先关游戏）
 ```
 
 编译器是 .NET Framework 的 `csc.exe`（C# 5 语法，必须带 `/noconfig`），引用取自 `Sea Power_Data\Managed` 与 AnchorChain 的 `AnchorChain.dll`。改代码时注意：本仓 `src/*.cs` 行尾**不统一**（`Api.cs` CRLF，`Control/Weapons/Sonobuoy/MapDraw` LF），批量替换脚本必须两种行尾都试。
 
-## 8. 实机验证清单（第一次开游戏时按顺序做）
+## 8. 部署后核验
 
-1. `/ping` → `200`，`coreIdentity` 里有 mod 目录。
-2. `/diag` → `mainThreadId` 非 -1，`pumpTicks` 在增长。
-3. `/state` → 有场景名；`/session` → `worldGeneration` 有值。
-4. `/watch` 注册一条 `{"unit_id":"<自己单位>","field":"destroyed","op":"eq","value":true,"ttl_s":120}` → 拿到 `watch_id` 与 `probe`（应为 `"false"`）。
-5. `GET /watch` 确认规则在；等 0.5 s 看 `hits` 不变（说明求值在跑但不误报）。
-6. 打沉该单位（或用调试手段置位）→ `comms/outbox.jsonl` 出现 `k:"event"` 行；`GET /watch/1` 的 `hits` 变 1；`once:true` 时规则自动消失。
-7. 读一条不存在的字段注册 → `field_unreadable`；注册不存在的单位 → `unit_not_found`。
-8. 读档后 `GET /watch` → 旧规则的 `world_generation` 与新 `worldGeneration` 不同，按 §`layer1_bridge.md` 的规则处理。
-
-## 审查修复记录（对第一版 `Watch.cs` 的 6 条意见）
-
-| # | 意见 | 处理 |
-|---|---|---|
-| P1 | 查单位漏掉游戏实际用的 `UniqueID` | 候选名单加入 `UniqueID`/`uniqueID`（大写 ID） |
-| P1 | 读档后复用 id 的旧规则会打到新单位 | 每 tick 比对 `world_generation`，不一致即注销并推 `expired`（原因写明代号变化） |
-| P1 | outbox 写失败仍消耗一次性规则 | `Emit` 返回是否真写入；`once` 只在**投递成功**后注销，失败保留重试 |
-| P2 | `null` 与读不到被合并，破坏 `exists`/`changes` | 新增 `MemberExists`（沿基类查 field/property）：成员存在但值为 null → 值 `"null"`，只有成员缺失才算不可读 |
-| P2 | `changes` 事件不计数、不注销 `once` | `changed` 与 `hit` 同样计入 `hits` 并触发 `once` 注销 |
-| P2 | 只改插件 id 仍无法与 legacy 同时跑 | 端口从 19080 改为 **19081**（v2 默认），并在文档标注 |
-
-**顺带修掉的运行成本问题（文档偏差的根因）**：原实现每帧求值、且条件持续为真时**每帧追加一行 outbox**。现在：
-- 求值节流 **0.2 s**（`EvalIntervalSeconds`）；
-- 命中改为**边沿触发**（条件由假变真才报一次，持续为真不重复）；
-- 文档里"每 0.5 秒求值"一并改为"0.2 秒节流 + 边沿触发"。
-
-**仍然存在的局限**（未修，别当已解决）：上层消费者还没写（`k:"event"` 行目前只有文件没有读者）；`crosses` 依赖采样、两帧间穿越再返回会漏；`changes` 无死区；`FindUnit` 仍是线性扫描。
+1. 重启游戏后请求 `GET /ping`，检查 `build.stamp` 与 `build.onDiskStamp` 一致，且 `build.staleDll` 为 false。
+2. 请求 `GET /diag`、`GET /state` 和 `GET /session`，核验主线程泵、场景和世界代际。
+3. 按 [Watch 契约](layer1_bridge.md) 验证登记、命中、落盘与读档失效。
 
 ## 9. Height control (measured 2026-11-05)
 
