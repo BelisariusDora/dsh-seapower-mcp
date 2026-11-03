@@ -1,4 +1,4 @@
-# spmcp_v2 - layer 1 (game bridge)
+# spmcp_v2 - game bridge and MCP adapter
 
 Migration of the C# game bridge out of `tools/spmcp` (now legacy, untouched).
 Same wire protocol, same AnchorChain entry point, plus a native trigger surface.
@@ -15,6 +15,20 @@ Same wire protocol, same AnchorChain entry point, plus a native trigger surface.
 
 - [doc/README.md](doc/README.md) - layer 1: files, threads, envelope, budgets, gaps
 - [doc/layer1_bridge.md](doc/layer1_bridge.md) - the `/watch` contract in full
+
+## Layer 2
+
+Run `python tools/spmcp_v2/mcp_server.py` from the game directory to start the
+MCP stdio adapter. `SPMCP_PORT` selects the bridge port (default `19080`).
+`build.ps1 -Deploy` copies the adapter alongside the bridge DLL.
+
+The adapter preserves the legacy tool mappings and adds `sp_watch_create`,
+`sp_watch_list`, `sp_watch_get` and `sp_watch_delete`. Trigger events go to the
+bridge outbox for a separate consumer.
+
+Use this direct adapter for development and integration. It exposes `sp_raw`,
+bridge writes and raw watch fields. A restricted Agent tool surface needs
+upstream authorization, intel policy and command bookkeeping.
 
 ## Triggers
 
