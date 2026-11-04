@@ -8,7 +8,7 @@ Run:  python tools/spmcp_v2/mcp_server.py
 Env:  SPMCP_PORT (default 19080), SPMCP_TIMEOUT (default 25 s -- the floor for
       every route, not the cap), SPMCP_SHOT_TIMEOUT (frame wait, 15 s)
 
-Deployed by build.ps1 as one file with the v2 bridge. The transport and
+Deployed by build.ps1 with the v2 bridge. The transport and
 tool mappings preserve bridge replies for the caller. This direct adapter is
 intended for development and integration before the policy layer is connected.
 """
@@ -25,6 +25,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from urllib.parse import quote
+
+import compact_replies
+import watch_events
+from track_briefs import TrackBriefs
+from track_motion import TrackMotion
 
 # Requests target a loopback game bridge, including on hosts with a system proxy.
 BRIDGE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -525,6 +530,29 @@ def t_tracks(args):
     return call("GET", "/tracks", None)
 
 
+TRACK_BRIEFS = TrackBriefs()
+TRACK_MOTION = TrackMotion()
+
+
+def t_tracks_brief(args):
+    def session_generation(reply):
+        if reply.get("ok") is not True:
+            return None
+        data = reply.get("data") or {}
+        current = data.get("current") or {}
+        return data.get("worldGeneration") if current.get("sceneName") == "mission" else None
+
+    generation = session_generation(t_session({}))
+    if generation is None:
+        return {"ok": False, "error": "No verified mission session; use sp_session to inspect."}
+    tracks = t_tracks({})
+    if tracks.get("ok") is not True:
+        return tracks
+    if session_generation(t_session({})) != generation:
+        return {"ok": False, "error": "Mission changed or could not be confirmed during track read; retry."}
+    return TRACK_BRIEFS.build(TRACK_MOTION.annotate(tracks, generation), generation)
+
+
 def t_weapons(args):
     return call("GET", "/units/%d/weapons" % int(args["unit_id"]), None)
 
@@ -718,21 +746,35 @@ def t_raw(args):
 
 
 def t_watch_create(args):
-    body = {key: args[key] for key in ("unit_id", "field", "op", "value", "once", "ttl_s")
+    body = {key: args[key] for key in ("unit_id", "field", "mode", "op", "value", "once", "ttl_s")
             if key in args}
-    return call("POST", "/watch", body)
+    if body.get("op") == "changes":
+        body.update(mode="edge", op="changed")
+    cursor = watch_events.read_events({})
+    if not cursor["ok"]:
+        return cursor
+    reply = call("POST", "/watch", body)
+    if reply.get("ok") is True and isinstance(reply.get("data"), dict):
+        reply["data"]["event_cursor"] = cursor["data"]["cursor"]
+    return reply
 
 
 def t_watch_list(args):
     return call("GET", "/watch")
 
 
+def watch_path(watch_id):
+    if type(watch_id) is int and watch_id > 0:
+        watch_id = "w" + str(watch_id)
+    return "/watch/" + quote(str(watch_id), safe="")
+
+
 def t_watch_get(args):
-    return call("GET", "/watch/" + quote(str(args["watch_id"]), safe=""))
+    return call("GET", watch_path(args["watch_id"]))
 
 
 def t_watch_delete(args):
-    return call("DELETE", "/watch/" + quote(str(args["watch_id"]), safe=""))
+    return call("DELETE", watch_path(args["watch_id"]))
 
 
 # ------------------------------------------------------- plotting table (map / plot)
@@ -1231,7 +1273,7 @@ def t_agent_panel(args):
 
 WATCH_ID_SCHEMA = {
     "type": "object",
-    "properties": {"watch_id": {"type": "integer", "minimum": 1}},
+    "properties": {"watch_id": {"type": "string", "pattern": "^w[1-9][0-9]*$"}},
     "required": ["watch_id"],
 }
 
@@ -1239,16 +1281,17 @@ WATCH_ID_SCHEMA = {
 TOOLS = [
     {
         "name": "sp_watch_create",
-        "description": "Register a temporary condition on a raw game unit field. Returns the watch ID and initial probe. Trigger events are written to the bridge outbox.",
+        "description": "Register a temporary condition on a raw game unit field. Returns the watch ID and initial probe. Poll sp_watch_events using the returned event_cursor to catch even immediate hits.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "unit_id": {"type": ["string", "integer"]},
                 "field": {"type": "string", "minLength": 1},
-                "op": {"type": "string", "enum": ["eq", "ne", "gt", "lt", "exists", "changes", "crosses"], "default": "eq"},
-                "value": {"description": "Comparison value for eq, ne, gt, lt or crosses."},
+                "mode": {"type": "string", "enum": ["state", "edge"], "default": "state"},
+                "op": {"type": "string", "enum": ["eq", "ne", "gt", "lt", "exists", "changed"]},
+                "value": {"description": "Comparison value for eq, ne, gt or lt. Edge mode observes changed."},
                 "once": {"type": "boolean"},
-                "ttl_s": {"type": "integer", "minimum": 0},
+                "ttl_s": {"type": "number", "minimum": 0, "description": "Wall-clock seconds. Zero means no time limit."},
             },
             "required": ["unit_id", "field"],
         },
@@ -1271,6 +1314,20 @@ TOOLS = [
         "description": "Remove a watch by ID.",
         "inputSchema": WATCH_ID_SCHEMA,
         "handler": t_watch_delete,
+    },
+    {
+        "name": "sp_watch_events",
+        "description": "Poll the local Bridge outbox for Watch events. Pass event_cursor from sp_watch_create or cursor from the previous poll. Omit cursor to initialize at the current tail. Keep a separate cursor per filtered consumer and deduplicate event_key across polls. Only evidence:true indicates a hit or change.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cursor": {"type": "string", "maxLength": 256},
+                "watch_id": {"type": "string", "pattern": "^w[1-9][0-9]*$"},
+                "world_generation": {"type": ["string", "integer"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 32},
+            },
+        },
+        "handler": watch_events.read_events,
     },
     {
         "name": "sp_ping",
@@ -1370,6 +1427,12 @@ TOOLS = [
         "description": "Every contact plotted by the player's side: track id, side, class, identification state, freshness, and the object_id it maps to. Use it to resolve a track number seen in the game UI.",
         "inputSchema": {"type": "object", "properties": {}},
         "handler": t_tracks,
+    },
+    {
+        "name": "sp_tracks_brief",
+        "description": "Read-only ranked changes since this MCP process last observed player tracks. The first read per world gives a ranked baseline. Object-ID remaps bypass the ordinary 800-byte text budget. This is a situational brief, so use sp_tracks for full track identity and before issuing an attack.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "handler": t_tracks_brief,
     },
     {
         "name": "sp_waypoints",
@@ -1540,7 +1603,7 @@ TOOLS = [
         "name": "sp_launch_aircraft",
         "description": (
             "Launch aircraft from a carrier/flight-deck unit. With `aircraft` the bridge asks the "
-            "game for THAT type by its file name (exactly as reported in fileName by sp_deck); "
+            "game for THAT type by its file name (exactly as reported in airgroupOnBoard[].fileName by sp_deck); "
             "without it, the game picks any airframe of ObjectType.Aircraft with UnitRoles.Fighter. "
             "Returns selectionPath so you can tell which path ran, plus airborneBefore/airborneAfter. "
             "confirmation is always 'submitted': check GET sp_airborne afterwards to see the real "
@@ -1552,7 +1615,7 @@ TOOLS = [
             "type": "object",
             "properties": dict(
                 U,
-                aircraft={"type": "string", "description": "Exact airframe file name from sp_deck's supportedAircraftTypes[].fileName (case-sensitive). Omit to let the game choose."},
+                aircraft={"type": "string", "description": "Exact airframe file name from sp_deck's airgroupOnBoard[].fileName (case-sensitive). Omit to let the game choose."},
                 loadout={"type": "string", "description": "Loadout name; omit for the default loadout."},
                 squadron={"type": "string", "description": "Optional squadron name filter (case-insensitive)."},
                 require_exact_loadout={"type": "boolean", "description": "If true, a loadout name that does not exist on board fails instead of falling back to Default."},
@@ -2594,6 +2657,14 @@ def handle_tools_call(params):
         return {"content": [{"type": "text", "text": "missing argument: %s" % e}], "isError": True}
     except Exception as e:  # noqa: BLE001
         return {"content": [{"type": "text", "text": "tool failed: %r" % e}], "isError": True}
+
+    if name in compact_replies.TOOLS and compact_replies.enabled():
+        if name == "sp_tracks":
+            result = TRACK_MOTION.annotate(result)
+        projected = compact_replies.project(name, result)
+        if projected is not result:
+            text = json.dumps(projected, ensure_ascii=False, separators=(",", ":"))
+            return {"content": [{"type": "text", "text": text}], "isError": False}
 
     text = json.dumps(result, ensure_ascii=False, indent=2)
     is_error = bool(result.get("ok") is False) if isinstance(result, dict) else False

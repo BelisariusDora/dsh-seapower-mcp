@@ -27,6 +27,10 @@ namespace SeaPowerAgentBridge
 
         private const string ShellName = "DshConsoleShell";
         private const double TitleH = 26.0;
+        private const double FrameBorder = 1.0;
+        private const double MaximizeInset = 4.0;
+        [Flags]
+        private enum ResizeEdge { Left = 1, Right = 2, Top = 4, Bottom = 8 }
         private const double TabH = 26.0;
         private const double MinW = 520.0;
         private const double MinH = 300.0;
@@ -48,6 +52,8 @@ namespace SeaPowerAgentBridge
         private static double _w = DefaultW;
         private static double _h = DefaultH;
         private static Panel _host;
+        private static FrameworkElement _tacticalRoot;
+        private static Grid _resizeOverlay;
         private static Border _shell;
         private static Grid _content;
         private static Grid _rows;
@@ -73,6 +79,9 @@ namespace SeaPowerAgentBridge
         private static string _lastError = "";
         private static float _lastAttempt = -100f;
         private static bool _resizing;
+        private static ResizeEdge _resizeEdge;
+        private static double _resizeFromLeft;
+        private static double _resizeFromTop;
         private static double _resizeFromW;
         private static double _resizeFromH;
         private static double _resizeFromX;
@@ -250,7 +259,7 @@ namespace SeaPowerAgentBridge
             o["hotkey"] = "N";
             o["titleButtons"] = new JArray(new object[] { "minimize", "maximize", "close" });
             o["resizable"] = true;
-            o["resizeBy"] = "drag the bottom-right grip; 'o' fills the host";
+            o["resizeBy"] = "drag any edge or corner; maximize fits the visible tactical area";
             o["maximized"] = _maximized;
             o["minimized"] = _minimized;
             o["rect"] = Rect();
@@ -291,14 +300,14 @@ namespace SeaPowerAgentBridge
         private static JObject Rect()
         {
             JObject r = new JObject();
-            r["w"] = Math.Round(_w);
-            r["h"] = Math.Round(_h);
+            r["w"] = Math.Round(_appliedW >= 0 ? _appliedW : _w);
+            r["h"] = Math.Round(_appliedH >= 0 ? _appliedH : _h);
             double hostW = _host == null ? 0 : Math.Round((double)_host.ActualWidth);
             double hostH = _host == null ? 0 : Math.Round((double)_host.ActualHeight);
             r["hostW"] = hostW;
             r["hostH"] = hostH;
-            r["left"] = Math.Round(Math.Max(0, (hostW - _w) / 2.0));
-            r["top"] = Math.Round(Math.Max(0, (hostH - _h) / 2.0));
+            r["left"] = double.IsNaN(_appliedL) ? JValue.CreateNull() : new JValue(Math.Round(_appliedL));
+            r["top"] = double.IsNaN(_appliedT) ? JValue.CreateNull() : new JValue(Math.Round(_appliedT));
             return r;
         }
 
@@ -336,6 +345,7 @@ namespace SeaPowerAgentBridge
             if (host == null) return;
 
             _host = host;
+            _tacticalRoot = root;
             BuildShell();
             if (_shell == null) return;
             try
@@ -355,9 +365,9 @@ namespace SeaPowerAgentBridge
 
         private static void Detach()
         {
+            if (_shell == null) return;
             Remove(PageInspector);
             Remove(PageComms);
-            if (_shell == null) return;
             try
             {
                 Panel parent = _shell.Parent as Panel;
@@ -365,6 +375,8 @@ namespace SeaPowerAgentBridge
             }
             catch (Exception) { }
             _shell = null;
+            _tacticalRoot = null;
+            _resizeOverlay = null;
             _content = null;
             _cellInspector = null;
             _cellComms = null;
@@ -390,7 +402,8 @@ namespace SeaPowerAgentBridge
             frame.Name = ShellName;
             frame.Background = UIBrush.Solid(Color.FromArgb(238, 7, 16, 26));
             frame.BorderBrush = UIBrush.Solid(Color.FromArgb(255, 64, 128, 176));
-            frame.BorderThickness = new Thickness(1);
+            frame.BorderThickness = new Thickness((float)FrameBorder);
+            frame.ClipToBounds = true;
             // Placed by margin rather than centred by alignment: the operator drags the
             // title bar to move the window, so the shell has to own its own top-left.
             frame.HorizontalAlignment = HorizontalAlignment.Left;
@@ -416,7 +429,7 @@ namespace SeaPowerAgentBridge
 
             Grid titleGrid = new Grid();
             titleGrid.ColumnDefinitions.Add(Col(1, true));
-            titleGrid.ColumnDefinitions.Add(Col(78));
+            titleGrid.ColumnDefinitions.Add(Col(88));
             title.Child = titleGrid;
 
             StackPanel left = new StackPanel();
@@ -452,7 +465,7 @@ namespace SeaPowerAgentBridge
             StackPanel buttons = new StackPanel();
             buttons.Orientation = Orientation.Horizontal;
             buttons.HorizontalAlignment = HorizontalAlignment.Right;
-            buttons.Margin = new Thickness(0, 0, 3, 0);
+            buttons.Margin = new Thickness(0, 0, 10, 0);
             buttons.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(buttons, 1);
             titleGrid.Children.Add(buttons);
@@ -484,27 +497,44 @@ namespace SeaPowerAgentBridge
             rows.Children.Add(content);
             _content = content;
 
-            // ---- resize grip, bottom right, inside the frame
-            Border grip = new Border();
-            grip.Background = UIBrush.Solid(Color.FromArgb(255, 74, 126, 166));
-            grip.HorizontalAlignment = HorizontalAlignment.Right;
-            grip.VerticalAlignment = VerticalAlignment.Bottom;
-            grip.Width = 12f;
-            grip.Height = 12f;
-            grip.IsHitTestVisible = true;
-            grip.MouseLeftButtonDown += OnGripDown;
-            grip.MouseMove += OnGripMove;
-            grip.MouseLeftButtonUp += OnGripUp;
-            // Row 0 was the default, so the grip used to sit inside the title bar next to
-            // the close button and the window had no working resize corner at all.
-            Grid.SetRow(grip, 2);
-            Panel.SetZIndex(grip, 20);
-            rows.Children.Add(grip);
+            _resizeOverlay = new Grid();
+            Grid.SetRowSpan(_resizeOverlay, 3);
+            Panel.SetZIndex(_resizeOverlay, 20);
+            rows.Children.Add(_resizeOverlay);
+            AddResizeGrip(ResizeEdge.Left);
+            AddResizeGrip(ResizeEdge.Right);
+            AddResizeGrip(ResizeEdge.Top);
+            AddResizeGrip(ResizeEdge.Bottom);
+            AddResizeGrip(ResizeEdge.Top | ResizeEdge.Left);
+            AddResizeGrip(ResizeEdge.Top | ResizeEdge.Right);
+            AddResizeGrip(ResizeEdge.Bottom | ResizeEdge.Left);
+            AddResizeGrip(ResizeEdge.Bottom | ResizeEdge.Right);
             _rows = rows;
 
             _shell = frame;
             _paintedKey = null;
             ApplyShellGeometry();
+        }
+
+        private static void AddResizeGrip(ResizeEdge edge)
+        {
+            bool left = (edge & ResizeEdge.Left) != 0;
+            bool right = (edge & ResizeEdge.Right) != 0;
+            bool top = (edge & ResizeEdge.Top) != 0;
+            bool bottom = (edge & ResizeEdge.Bottom) != 0;
+            bool corner = (left || right) && (top || bottom);
+            var grip = new Border();
+            grip.Background = UIBrush.Solid(Color.FromArgb(1, 74, 126, 166));
+            grip.HorizontalAlignment = left ? HorizontalAlignment.Left :
+                right ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+            grip.VerticalAlignment = top ? VerticalAlignment.Top :
+                bottom ? VerticalAlignment.Bottom : VerticalAlignment.Stretch;
+            if (left || right) grip.Width = corner ? 12f : 5f;
+            if (top || bottom) grip.Height = corner ? 12f : 5f;
+            grip.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { OnGripDown(sender, e, edge); };
+            grip.MouseMove += OnGripMove;
+            grip.MouseLeftButtonUp += OnGripUp;
+            _resizeOverlay.Children.Add(grip);
         }
 
         private static Border TitleButton(string text, MouseButtonEventHandler onClick)
@@ -595,61 +625,66 @@ namespace SeaPowerAgentBridge
             label.Text = (on ? "  \u25B8 " : "    ") + text;
         }
 
+        private static Noesis.Rect VisibleHostBounds()
+        {
+            float w = _host == null ? 0 : (float)_host.ActualWidth;
+            float h = _host == null ? 0 : (float)_host.ActualHeight;
+            var bounds = new Noesis.Rect(0, 0, w, h);
+            if (w <= 0 || h <= 0 || _tacticalRoot == null) return bounds;
+            float rootW = (float)_tacticalRoot.ActualWidth;
+            float rootH = (float)_tacticalRoot.ActualHeight;
+            if (rootW <= 0 || rootH <= 0) return bounds;
+            Noesis.Rect mapped = _host.TransformToAncestor(_tacticalRoot).TransformBounds(bounds);
+            if (mapped.Width <= 0 || mapped.Height <= 0) return bounds;
+            double left = Math.Max(0, -mapped.X * w / mapped.Width);
+            double top = Math.Max(0, -mapped.Y * h / mapped.Height);
+            double right = Math.Min(w, (rootW - mapped.X) * w / mapped.Width);
+            double bottom = Math.Min(h, (rootH - mapped.Y) * h / mapped.Height);
+            return new Noesis.Rect((float)left, (float)top,
+                (float)Math.Max(0, right - left), (float)Math.Max(0, bottom - top));
+        }
+
         private static void ApplyShellGeometry()
         {
             if (_shell == null) return;
-            double hostW = _host == null ? 0 : (double)_host.ActualWidth;
-            double hostH = _host == null ? 0 : (double)_host.ActualHeight;
-            if (hostW <= 0 || hostH <= 0) return;
-
-            if (_maximized)
+            Noesis.Rect bounds = VisibleHostBounds();
+            if (bounds.Width <= 0 || bounds.Height <= 0) return;
+            double inset = _maximized && bounds.Width > 2 * MaximizeInset && bounds.Height > 2 * MaximizeInset
+                ? MaximizeInset : 0.0;
+            double w = _maximized ? bounds.Width - 2 * inset : Math.Min(Math.Max(_w, MinW), bounds.Width);
+            double h = _maximized ? bounds.Height - 2 * inset : _minimized
+                ? Math.Min(TitleH + 2 * FrameBorder, bounds.Height)
+                : Math.Min(Math.Max(_h, MinH), bounds.Height);
+            double left = _maximized ? bounds.X + inset : double.IsNaN(_left)
+                ? bounds.X + (bounds.Width - w) / 2 : _left;
+            double top = _maximized ? bounds.Y + inset : double.IsNaN(_top)
+                ? bounds.Y + (bounds.Height - h) / 2 : _top;
+            left = Math.Max(bounds.X, Math.Min(left, bounds.X + bounds.Width - w));
+            top = Math.Max(bounds.Y, Math.Min(top, bounds.Y + bounds.Height - h));
+            if (!_maximized)
             {
-                _w = hostW;
-                _h = hostH;
+                _left = left;
+                _top = top;
             }
-            if (_minimized)
-            {
-                if (_w < MinW) _w = MinW;
-                _h = TitleH + 2.0;
-            }
-            if (_w > hostW) _w = hostW;
-            if (_h > hostH) _h = hostH;
-            if (_w < MinW) _w = Math.Min(MinW, hostW);
-            if (_h < MinH) _h = Math.Min(MinH, hostH);
 
-            if (double.IsNaN(_left) || double.IsNaN(_top) || _maximized)
-            {
-                _left = Math.Max(0.0, (hostW - _w) / 2.0);
-                _top = Math.Max(0.0, (hostH - _h) / 2.0);
-            }
-            if (_left + _w > hostW) _left = Math.Max(0.0, hostW - _w);
-            if (_top + _h > hostH) _top = Math.Max(0.0, hostH - _h);
-            if (_left < 0) _left = 0;
-            if (_top < 0) _top = 0;
-
-            bool same = Math.Abs(_w - _appliedW) < 0.5 && Math.Abs(_h - _appliedH) < 0.5
-                && Math.Abs(_left - _appliedL) < 0.5 && Math.Abs(_top - _appliedT) < 0.5
+            bool same = Math.Abs(w - _appliedW) < 0.5 && Math.Abs(h - _appliedH) < 0.5
+                && Math.Abs(left - _appliedL) < 0.5 && Math.Abs(top - _appliedT) < 0.5
                 && _appliedMax == _maximized && _appliedMin == _minimized;
             if (same) return;
-            _appliedW = _w;
-            _appliedH = _h;
-            _appliedL = _left;
-            _appliedT = _top;
+            _appliedW = w;
+            _appliedH = h;
+            _appliedL = left;
+            _appliedT = top;
             _appliedMax = _maximized;
             _appliedMin = _minimized;
 
-            if (_rows != null && _rows.RowDefinitions.Count == 3)
-            {
-                _rows.RowDefinitions[1].Height = _minimized ? new GridLength(0.0f) : new GridLength((float)TabH);
-                _rows.RowDefinitions[2].Height = _minimized
-                    ? new GridLength(0.0f)
-                    : new GridLength(1.0f, GridUnitType.Star);
-            }
-            _shell.Width = (float)_w;
-            _shell.Height = (float)_h;
-            _shell.Margin = new Thickness((float)_left, (float)_top, 0, 0);
-            // The new size and position only take effect on a layout pass; without this the
-            // frame keeps painting at the old rect until something else forces one.
+            _rows.RowDefinitions[1].Height = _minimized ? new GridLength(0f) : new GridLength((float)TabH);
+            _rows.RowDefinitions[2].Height = _minimized ? new GridLength(0f) : new GridLength(1f, GridUnitType.Star);
+            _content.Visibility = _minimized ? Visibility.Collapsed : Visibility.Visible;
+            _resizeOverlay.Visibility = _minimized || _maximized ? Visibility.Collapsed : Visibility.Visible;
+            _shell.Width = (float)w;
+            _shell.Height = (float)h;
+            _shell.Margin = new Thickness((float)left, (float)top, 0, 0);
             try { _shell.UpdateLayout(); } catch (Exception) { }
         }
 
@@ -707,14 +742,11 @@ namespace SeaPowerAgentBridge
             if (!_dragging || _shell == null || _host == null) return;
             e.Handled = true;
             Point p = e.GetPosition(_host);
-            double hostW = (double)_host.ActualWidth;
-            double hostH = (double)_host.ActualHeight;
-            double left = _dragFromLeft + (p.X - _dragFromX);
-            double top = _dragFromTop + (p.Y - _dragFromY);
-            if (left < 0) left = 0;
-            if (top < 0) top = 0;
-            if (left + _w > hostW) left = Math.Max(0.0, hostW - _w);
-            if (top + _h > hostH) top = Math.Max(0.0, hostH - _h);
+            Noesis.Rect bounds = VisibleHostBounds();
+            double left = Math.Max(bounds.X, Math.Min(_dragFromLeft + (p.X - _dragFromX),
+                bounds.X + bounds.Width - _appliedW));
+            double top = Math.Max(bounds.Y, Math.Min(_dragFromTop + (p.Y - _dragFromY),
+                bounds.Y + bounds.Height - _appliedH));
             if (Math.Abs(left - _left) < 1.0 && Math.Abs(top - _top) < 1.0) return;
             _left = left;
             _top = top;
@@ -732,39 +764,51 @@ namespace SeaPowerAgentBridge
 
         // ================================================== resize
 
-        private static void OnGripDown(object sender, MouseButtonEventArgs e)
+        private static void OnGripDown(object sender, MouseButtonEventArgs e, ResizeEdge edge)
         {
+            if (_shell == null || _host == null || _maximized || _minimized) return;
             e.Handled = true;
-            if (_shell == null) return;
             _resizing = true;
-            _resizeFromW = _w;
-            _resizeFromH = _h;
-            Point p = e.GetPosition(_shell);
+            _resizeEdge = edge;
+            _resizeFromLeft = _appliedL;
+            _resizeFromTop = _appliedT;
+            _resizeFromW = _appliedW;
+            _resizeFromH = _appliedH;
+            Point p = e.GetPosition(_host);
             _resizeFromX = p.X;
             _resizeFromY = p.Y;
             _capture = sender as UIElement;
-            try { if (_capture != null) _capture.CaptureMouse(); else _shell.CaptureMouse(); }
+            try { if (_capture != null) _capture.CaptureMouse(); }
             catch (Exception) { }
+        }
+
+        private static void ResizeAxis(ref double start, ref double end, double delta,
+            double min, double lower, double upper, bool moveStart, bool moveEnd)
+        {
+            if (moveStart) start = Math.Max(lower, Math.Min(start + delta, end - min));
+            if (moveEnd) end = Math.Min(upper, Math.Max(end + delta, start + min));
         }
 
         private static void OnGripMove(object sender, MouseEventArgs e)
         {
-            if (!_resizing || _shell == null) return;
+            if (!_resizing || _shell == null || _host == null) return;
             e.Handled = true;
-            Point p = e.GetPosition(_shell);
-            double hostW = _host == null ? 0 : (double)_host.ActualWidth;
-            double hostH = _host == null ? 0 : (double)_host.ActualHeight;
-            double w = _resizeFromW + (p.X - _resizeFromX);
-            double h = _resizeFromH + (p.Y - _resizeFromY);
-            if (w < MinW) w = MinW;
-            if (h < MinH) h = MinH;
-            if (hostW > 0 && w > hostW) w = hostW;
-            if (hostH > 0 && h > hostH) h = hostH;
-            if (Math.Abs(w - _w) < 1.0 && Math.Abs(h - _h) < 1.0) return;
-            _w = w;
-            _h = h;
-            _maximized = false;
-            _paintedKey = null;
+            Point p = e.GetPosition(_host);
+            Noesis.Rect bounds = VisibleHostBounds();
+            double left = _resizeFromLeft;
+            double top = _resizeFromTop;
+            double right = left + _resizeFromW;
+            double bottom = top + _resizeFromH;
+            ResizeAxis(ref left, ref right, p.X - _resizeFromX, Math.Min(MinW, bounds.Width),
+                bounds.X, bounds.X + bounds.Width,
+                (_resizeEdge & ResizeEdge.Left) != 0, (_resizeEdge & ResizeEdge.Right) != 0);
+            ResizeAxis(ref top, ref bottom, p.Y - _resizeFromY, Math.Min(MinH, bounds.Height),
+                bounds.Y, bounds.Y + bounds.Height,
+                (_resizeEdge & ResizeEdge.Top) != 0, (_resizeEdge & ResizeEdge.Bottom) != 0);
+            _left = left;
+            _top = top;
+            _w = right - left;
+            _h = bottom - top;
             ApplyShellGeometry();
             ResizeActivePage();
         }
@@ -818,7 +862,7 @@ namespace SeaPowerAgentBridge
         /// <summary>The page fills the content well; its own title row is collapsed.</summary>
         private static void ResizeActivePage()
         {
-            if (_content == null) return;
+            if (_content == null || _minimized) return;
             try
             {
                 if (_active == PageInspector) InspectorWindow.FillContentArea(_content);

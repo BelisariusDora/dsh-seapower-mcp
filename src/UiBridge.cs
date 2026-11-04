@@ -782,6 +782,7 @@ namespace SeaPowerAgentBridge
             return null;
         }
         private static string _typingOwner = "";
+        private static TextBox _typingInput;
 
         private static void PushKey(string what)
         {
@@ -969,7 +970,7 @@ namespace SeaPowerAgentBridge
                 InspectorWindow.HandleKey(name);
                 // TR2-H: Enter in the comms box is a submit for that page. The page keeps
                 // its own armed flag, so a focused inspector box keeps its Enter too.
-                if (CommsWindow.HandleKey(name)) return;
+                if (CommsWindow.HandleKey(name)) { e.Handled = true; return; }
 
                 if (name == "Escape")
                 {
@@ -1113,6 +1114,11 @@ namespace SeaPowerAgentBridge
 
         public static JObject SetTyping(bool on, string owner)
         {
+            return SetTyping(on, owner, _input);
+        }
+
+        internal static JObject SetTyping(bool on, string owner, TextBox input)
+        {
             JObject o = new JObject();
             o["ok"] = true;
             o["want"] = on;
@@ -1128,16 +1134,17 @@ namespace SeaPowerAgentBridge
             }
             if (on)
             {
-                _typingElementOk = SetMemberOn(h, "typingElement", _input);
+                _typingElementOk = SetMemberOn(h, "typingElement", input);
                 SetMemberOn(h, "typingActive", true);
                 _typing = true;
                 _typingOwner = owner;
-                if (_input != null)
+                _typingInput = input;
+                if (input != null)
                 {
                     try
                     {
-                        Keyboard kb = _input.Keyboard;
-                        if (kb != null) kb.Focus(_input);
+                        Keyboard kb = input.Keyboard;
+                        if (kb != null) kb.Focus(input);
                     }
                     catch (Exception) { }
                 }
@@ -1148,6 +1155,7 @@ namespace SeaPowerAgentBridge
                 SetMemberOn(h, "typingElement", null);
                 _typing = false;
                 _typingOwner = "";
+                _typingInput = null;
             }
             object now = GetMemberOn(h, "typingActive");
             _typingActiveField = now != null && Convert.ToBoolean(now);
@@ -1167,8 +1175,9 @@ namespace SeaPowerAgentBridge
         {
             try
             {
-                if (_input == null) return;
-                Keyboard kb = _input.Keyboard;
+                TextBox input = _typingInput ?? _input;
+                if (input == null) return;
+                Keyboard kb = input.Keyboard;
                 if (kb == null) return;
                 kb.ClearFocus();
                 Core.Log("ui keyboard released (caret gone)");

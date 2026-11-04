@@ -41,16 +41,22 @@ namespace SeaPowerAgentBridge
             public FieldInfo Field;
             public PropertyInfo Property;
             public bool Exists { get { return Field != null || Property != null; } }
-            public object Read(object holder)
+            public bool TryRead(object holder, out object value)
             {
+                value = null;
+                if (holder == null || !Exists) return false;
                 try
                 {
-                    if (holder == null) return null;
-                    if (Field != null) return Field.GetValue(holder);
-                    if (Property != null) return Property.GetValue(holder, null);
+                    object member = Field != null ? Field.GetValue(holder) : Property.GetValue(holder, null);
+                    if (member != null && member.GetType().Namespace == "UniRx")
+                    {
+                        PropertyInfo inner = member.GetType().GetProperty("Value");
+                        if (inner != null) member = inner.GetValue(member, null);
+                    }
+                    value = member;
+                    return true;
                 }
-                catch (Exception) { }
-                return null;
+                catch (Exception) { return false; }
             }
         }
 
@@ -181,6 +187,8 @@ namespace SeaPowerAgentBridge
             if (op != "eq" && op != "ne" && op != "gt" && op != "lt" && op != "exists" && op != "changed")
                 throw new ApiException(400, "bad_op", "op is one of eq, ne, gt, lt, exists, changed", false);
             if (mode == "edge") op = "changed";
+            else if (op == "changed")
+                throw new ApiException(400, "bad_op", "changed requires mode edge", false);
 
             object unit = ResolveUnit(unitKey);
             if (unit == null)
@@ -220,8 +228,8 @@ namespace SeaPowerAgentBridge
                 r.Want = TryNumber(req, "value", double.NaN);
             }
 
-            object baseline = reader.Read(unit);
-            r.HadBaseline = baseline != null;
+            object baseline;
+            r.HadBaseline = reader.TryRead(unit, out baseline);
             r.BaselineRaw = AsText(baseline);
             r.LastValueRaw = r.BaselineRaw;
 
@@ -229,9 +237,9 @@ namespace SeaPowerAgentBridge
             JObject data = Describe(r);
             if (mode == "state")
             {
-                bool satisfied;
-                string raw;
-                bool comparable = Evaluate(r, out satisfied, out raw);
+                bool satisfied = false;
+                string raw = r.BaselineRaw;
+                bool comparable = r.HadBaseline && Evaluate(r, baseline, raw, out satisfied);
                 data["satisfied_now"] = comparable && satisfied;
                 if (raw != null) data["reading"] = raw;
                 if (comparable && satisfied)
@@ -310,7 +318,7 @@ namespace SeaPowerAgentBridge
                 _lastRetry = now;
                 _genStamp = CurrentGeneration();
 
-                Dictionary<string, string> shared = new Dictionary<string, string>();
+                Dictionary<string, object> shared = new Dictionary<string, object>();
                 Dictionary<string, bool> readable = new Dictionary<string, bool>();
 
                 for (int i = Rules.Count - 1; i >= 0; i--)
@@ -341,19 +349,16 @@ namespace SeaPowerAgentBridge
                     }
 
                     string key = r.UnitKey + "|" + r.Field;
+                    object value;
                     bool ok;
-                    string raw;
-                    if (shared.ContainsKey(key))
+                    if (shared.TryGetValue(key, out value))
                     {
-                        raw = shared[key];
                         ok = readable[key];
                     }
                     else
                     {
-                        object v = r.Reader.Read(r.Unit);
-                        ok = v != null || r.Reader.Exists;
-                        raw = AsText(v);
-                        shared[key] = raw;
+                        ok = r.Reader.TryRead(r.Unit, out value);
+                        shared[key] = value;
                         readable[key] = ok;
                     }
                     if (!ok)
@@ -361,10 +366,11 @@ namespace SeaPowerAgentBridge
                         Emit(r, "unreadable", "the field could not be read", null);
                         continue;
                     }
+                    string raw = AsText(value);
                     r.LastValueRaw = raw;
 
                     bool hit;
-                    if (!Evaluate(r, out hit, out raw))
+                    if (!Evaluate(r, value, raw, out hit))
                     {
                         Emit(r, "unreadable", "the value is not comparable to what was asked", raw);
                         continue;
@@ -376,8 +382,8 @@ namespace SeaPowerAgentBridge
                     bool rising = r.Mode == "edge" || !r.PrevHit;
                     r.PrevHit = true;
                     if (!rising) continue;
-                    if (r.Mode == "edge") r.BaselineRaw = raw;
                     HitsAndMaybeFreeze(r, r.Mode == "edge" ? "changed" : "hit", raw);
+                    if (r.Mode == "edge") r.BaselineRaw = raw;
                     if (r.Frozen && DeliverFrozen(r)) Rules.RemoveAt(i);
                 }
             }
@@ -403,16 +409,17 @@ namespace SeaPowerAgentBridge
         }
 
         /// <summary>False only when the very thing asked about cannot be compared.</summary>
-        private static bool Evaluate(Rule r, out bool hit, out string raw)
+        private static bool Evaluate(Rule r, object value, string raw, out bool hit)
         {
             hit = false;
-            object value = r.Reader.Read(r.Unit);
-            raw = AsText(value);
-
             if (r.Mode == "edge")
             {
-                if (value == null) hit = r.HadBaseline;
-                else hit = !string.Equals(raw, r.BaselineRaw, StringComparison.Ordinal);
+                if (r.HadBaseline) hit = !string.Equals(raw, r.BaselineRaw, StringComparison.Ordinal);
+                else
+                {
+                    r.HadBaseline = true;
+                    r.BaselineRaw = raw;
+                }
                 return true;
             }
 

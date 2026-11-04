@@ -1,4 +1,4 @@
-﻿// Weapons.cs - three game-side write primitives that /units/{id}/<command> never had:
+// Weapons.cs - three game-side write primitives that /units/{id}/<command> never had:
 // attack_waypoint, countermeasures, radars.
 //
 // Why one file: all three are "order the hull's own systems to do something", all three need the
@@ -1080,6 +1080,38 @@ namespace SeaPowerAgentBridge
             return rows;
         }
 
+        // Fleet telemetry reads live system state rather than the UI toggle flags.
+        internal static JObject SensorSnapshot(ObjectBase unit)
+        {
+            object equipment = GameReflect.Member(unit, "_obp");
+            return new JObject
+            {
+                { "emcon", Api.SafeStr(UnboxValue(GameReflect.Member(unit, "Emcon"))) },
+                { "airSearchRadar", SensorBank(equipment, "_airSearchRadars") },
+                { "surfaceSearchRadar", SensorBank(equipment, "_surfaceSearchRadars") },
+                { "activeSonar", SensorBank(equipment, "_activeSonarSystems") }
+            };
+        }
+
+        private static JToken SensorBank(object equipment, string member)
+        {
+            IList systems = GameReflect.Member(equipment, member) as IList;
+            if (systems == null) return JValue.CreateNull();
+
+            int known = 0;
+            int on = 0;
+            foreach (object system in systems)
+            {
+                object value = GameReflect.Member(system, "IsOn");
+                if (!(value is bool)) value = UnboxValue(value);
+                if (!(value is bool)) continue;
+                known++;
+                if ((bool)value) on++;
+            }
+            return new JObject { { "fitted", systems.Count }, { "readable", known }, { "on", on } };
+        }
+
+
         private static bool AnyOn(JArray air, JArray surface, int roleOrdinal)
         {
             if (roleOrdinal == RoleAir) return ArrayAnyOn(air);
@@ -1170,6 +1202,17 @@ namespace SeaPowerAgentBridge
         }
 
         // ====================================================================== task read-back
+
+        internal static JToken EngageTasksSnapshot(ObjectBase unit)
+        {
+            IList tasks = GameReflect.Member(unit, "_currentEngageTasks") as IList;
+            if (tasks == null) return JValue.CreateNull();
+
+            JArray rows = new JArray();
+            foreach (object task in tasks)
+                if (task != null) rows.Add(EngageTaskJson(task));
+            return rows;
+        }
 
         private static JObject EngageTaskJson(object task)
         {

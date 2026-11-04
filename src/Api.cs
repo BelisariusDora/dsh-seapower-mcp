@@ -135,7 +135,6 @@ namespace SeaPowerAgentBridge
         /// surface is handed to the migrated implementation untouched.</summary>
         public static HttpResult Dispatch(string method, string path, string body)
         {
-            if (Watch.Matches(path)) return Watch.Dispatch(method, path, body);
             return DispatchCore(method, path, body);
         }
 
@@ -229,6 +228,7 @@ namespace SeaPowerAgentBridge
 
         private static HttpResult DispatchOnMain(string method, string path, string body, long requestId)
         {
+            if (Watch.Matches(path)) return Watch.Dispatch(method, path, body);
             JObject resp = new JObject();
             int status = 200;
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -461,7 +461,13 @@ namespace SeaPowerAgentBridge
                 // "unit not found" - correct, but it learns nothing about what IS there. This
                 // sub-route answers one question: "which of my units exist right now", stamped
                 // with the world generation so a stale answer stays recognisable.
-                if (seg.Length >= 2 && seg[1] == "fleet") return OnMain(delegate { return FleetSnapshot(); });
+                if (seg.Length >= 2 && seg[1] == "fleet")
+                {
+                    JObject options = QueryObject(query);
+                    bool includeSensors = (string)options["sensors"] == "1";
+                    bool includeOrders = (string)options["orders"] == "1";
+                    return OnMain(delegate { return FleetSnapshot(includeSensors, includeOrders); });
+                }
                 if (seg.Length >= 2)
                     throw new ApiException(404, "not_found", "expected /session or /session/fleet", false);
                 return SessionRegistry.Report();            }
@@ -1574,7 +1580,11 @@ namespace SeaPowerAgentBridge
 
         private static JToken Waypoints(int id)
         {
-            ObjectBase u = FindUnit(id);
+            return Waypoints(FindUnit(id));
+        }
+
+        private static JToken Waypoints(ObjectBase u)
+        {
             JArray arr = new JArray();
             try
             {
@@ -4591,6 +4601,12 @@ private static bool IsRefused(JToken result)
         {
             ObjectBase u = FindUnit(id);
             if (u == null) throw new ApiException(404, "unit_not_found", "unit not found: " + id, false);
+            return DeckTasks(u);
+        }
+
+        private static JObject DeckTasks(ObjectBase u)
+        {
+            int id = u.UniqueID;
 
             JObject o = new JObject();
             o["unit"] = id;
@@ -4774,6 +4790,7 @@ private static bool IsRefused(JToken result)
             ContactView.Decorate(trackList);
             JObject trackAudit = TrackScope.Apply(trackList);
             res["tracks"] = trackList;
+            res["worldGeneration"] = SessionRegistry.WorldGeneration;
             res["intel"] = trackAudit;
             res["revealSwitch"] = IntelRevealEnabled();
             res["positionFace"] = "estimate";
@@ -5272,7 +5289,7 @@ private static bool IsRefused(JToken result)
         /// The failure mode it answers is concrete: an id kept from the previous scenario
         /// returns 404, and the caller then has no cheap way to ask what replaced it.
         /// </summary>
-        internal static JObject FleetSnapshot()
+        internal static JObject FleetSnapshot(bool includeSensors, bool includeOrders)
         {
             if (!Core.IsMain) throw new ApiException(500, "off_main_thread",
                 "FleetSnapshot reads game state, which is only legal on the Unity main thread", false);
@@ -5293,6 +5310,17 @@ private static bool IsRefused(JToken result)
                 JObject r = UnitJson(u);
                 // B15: the property is CurrentOrderText; "orderText" does not exist on ObjectBase.
                 r["orderText"] = SafeStr(Rx(u, "CurrentOrderText"));
+                if (!SafeFlag(u, "destroyed"))
+                {
+                    if (includeSensors) r["sensors"] = SeaPowerAgentBridge.Weapons.SensorSnapshot(u);
+                    if (includeOrders)
+                    {
+                        r["orderType"] = SafeStr(Member(Rx(u, "CurrentOrder"), "OrderType") ?? Member(Member(u, "CurrentOrder"), "OrderType"));
+                        r["waypoints"] = Waypoints(u)["waypoints"];
+                        r["engageTasks"] = SeaPowerAgentBridge.Weapons.EngageTasksSnapshot(u);
+                        if (DeckObject(u) != null) r["flightDeckTasks"] = DeckTasks(u)["tasks"];
+                    }
+                }
                 rows.Add(r);
                 if (SafeFlag(u, "destroyed")) dead++;
                 else if (SafeFlag(u, "sub")) sub++;
@@ -5309,10 +5337,43 @@ private static bool IsRefused(JToken result)
             kinds["land"] = land;
             o["byKind"] = kinds;
             o["units"] = rows;
+            if (includeOrders) MarkFleetRtb(rows);
             o["note"] = "own units only. ids are meaningful inside one world generation: after loading a scenario "
                 + "call this again instead of reusing ids from the previous one.";
             return o;
         }
+
+        private static void MarkFleetRtb(JArray rows)
+        {
+            var returning = new HashSet<int>();
+            var recovering = new HashSet<int>();
+            foreach (JObject row in rows)
+            {
+                var tasks = row["flightDeckTasks"] as JArray;
+                if (tasks == null) continue;
+                foreach (JObject task in tasks)
+                {
+                    int? id = (int?)task["vehicleId"];
+                    if (!id.HasValue || (bool?)task["cancelled"] == true) continue;
+                    string type = (string)task["clrType"];
+                    if (type == "ReturnTask") returning.Add(id.Value);
+                    if (type == "RecoveryTask") recovering.Add(id.Value);
+                }
+            }
+
+            foreach (JObject row in rows)
+            {
+                if ((bool?)row["air"] != true || (bool?)row["destroyed"] == true) continue;
+                int id = (int)row["id"];
+                string order = (string)row["orderType"];
+                string phase = recovering.Contains(id) ? "recovery" :
+                    returning.Contains(id) || order == "ReturnToBase" ? "returning" : null;
+                row["rtbPhase"] = phase;
+                row["rtbActive"] = phase != null ? new JValue(true) :
+                    string.IsNullOrEmpty(order) ? JValue.CreateNull() : new JValue(false);
+            }
+        }
+
 
         private static int _fleetGen = -1;
         private static int _fleetCount;
@@ -5377,11 +5438,8 @@ private static bool IsRefused(JToken result)
         /// has legacy input disabled the read throws once; it is caught, logged once and
         /// then skipped instead of being retried every frame.
         /// </summary>
-        // TEMPORARY: the console/ inspector UI is switched off while the work-order
-        // pipeline is being built. It flickered and stole the N key; the pages are
-        // still here, they just do not paint and do not poll. Flip this to false to
-        // bring the console back exactly as it was.
-        private const bool UiHidden = true;
+        // Gates both the console paint loop and its keyboard polling.
+        private const bool UiHidden = false;
 
         public static void InspectorKeyTick()
         {
@@ -5406,7 +5464,11 @@ private static bool IsRefused(JToken result)
                     }
                     // A click on the box itself re-arms on the same frame; a click anywhere
                     // else leaves the lock off, which is the behaviour the operator asked for.
-                    if (UnityEngine.Input.GetMouseButtonDown(0))
+                    if ((UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.Return)
+                            || UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.KeypadEnter))
+                            && CommsWindow.HandleKey("Return"))
+                        return;
+                    if (UnityEngine.Input.GetMouseButtonDown(0) && !CommsWindow.ClaimedClickThisFrame)
                     {
                         UiBridge.ReleaseTypingNow("click outside the box (frame poll)");
                         return;

@@ -54,6 +54,7 @@ namespace SeaPowerAgentBridge
         /// without this id the page shows it twice - and the second copy arrives AFTER the next
         /// message, which reads as "send shows me the previous line".</summary>
         public long OutgoingId;
+        public string Target = "dsh";
 
         /// <summary>The transcript confirmed this player line. Set on the echo row itself, so the
         /// page still shows one row per typed message.</summary>
@@ -67,6 +68,7 @@ namespace SeaPowerAgentBridge
         public double At;
         public string Text = "";
         public string State = "queued";   // queued | taken
+        public string Target = "dsh";
         public bool Matched;              // the transcript already showed this line
     }
 
@@ -425,22 +427,17 @@ namespace SeaPowerAgentBridge
             }
             if (count <= 0) return;
 
-            // not `text`: an earlier block in this method already owns that name, and C#
-            // will not let the later one shadow it.
-            string chunkText = Encoding.UTF8.GetString(chunk, 0, count);
-            int cut = chunkText.LastIndexOf('\n');
-            if (cut < 0)
+            // The cursor is a byte offset. Find the complete line boundary before
+            // decoding so Chinese text and split UTF-8 sequences cannot rewind it too far.
+            int cut = Array.LastIndexOf(chunk, (byte)'\n', count - 1, count);
+            int complete = cut + 1;
+            if (complete < count)
             {
-                // A partial line: rewind so the next pass reads it whole.
-                lock (_lock) { _offset -= count; }
-                return;
+                lock (_lock) { _offset -= count - complete; }
             }
-            if (cut + 1 < count)
-            {
-                lock (_lock) { _offset -= (count - cut - 1); }
-            }
-            chunkText = chunkText.Substring(0, cut);
-            foreach (string line in chunkText.Split('\n'))
+            if (complete == 0) return;
+            string chunkText = Encoding.UTF8.GetString(chunk, 0, complete);
+            foreach (string line in chunkText.Split(new char[] { '\n' }))
             {
                 if (line.Length > 0) ParseLine(line);
             }
@@ -534,7 +531,8 @@ namespace SeaPowerAgentBridge
                     for (int i = 0; i < _out.Count; i++)
                     {
                         CommsOutgoing o2 = _out[i];
-                        if (o2.Matched) continue;
+                        if (o2.Target != "dsh") continue;
+                        if (o2.Matched || o2.Target != "dsh") continue;
                         if ((o2.Text ?? "").Trim() != echoText) continue;
                         o2.Matched = true;
                         o2.State = "taken";
@@ -675,9 +673,14 @@ namespace SeaPowerAgentBridge
             bool truncated = false;
             if (text.Length > max) { text = text.Substring(0, max); truncated = true; }
 
+            string target = (string)req["target"] ?? "dsh";
+            if (target != "dsh" && target != "codex")
+                throw new ApiException(400, "invalid_target", "comms target must be dsh or codex", false);
+
             CommsOutgoing msg = new CommsOutgoing();
             msg.At = NowMs();
             msg.Text = text;
+            msg.Target = target;
 
             string path;
             lock (_lock)
@@ -712,10 +715,13 @@ namespace SeaPowerAgentBridge
                     Kind = "user",
                     Text = text,
                     At = msg.At,
-                    OutgoingId = msg.Id
+                    OutgoingId = msg.Id,
+                    Target = target
                 });
             }
 
+            if (target == "codex" && path != null)
+                path = Path.Combine(Path.GetDirectoryName(path), "codex.outbox.jsonl");
             string writeError = null;
             if (!string.IsNullOrEmpty(path))
             {
@@ -746,14 +752,13 @@ namespace SeaPowerAgentBridge
             o["id"] = msg.Id;
             o["text"] = text;
             o["truncated"] = truncated;
+            o["target"] = target;
             o["queued"] = writeError == null;
             // Three states can never be collapsed into one word: the message exists, it was
             // written to the outbox, and it has NOT been delivered to the harness yet.
             o["state"] = writeError == null ? "queued_for_harness" : "not_written";
             if (writeError != null) o["error"] = writeError;
-            o["next"] = "comms\\outbox.jsonl is the hand-off point: an external helper (or the"
-                + " agent through its own MCP tool) has to take it from there. The bridge does"
-                + " not talk to the harness HTTP API - that needs a session cookie it cannot get.";
+            o["next"] = Path.GetFileName(path);
             return o;
         }
 

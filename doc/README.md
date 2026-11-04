@@ -4,7 +4,7 @@
 
 部署产物位于游戏的 `StreamingAssets/dsh-spmcp`。通过 `GET /ping` 比对加载中的 build stamp 和磁盘 stamp。
 
-第二层见 [MCP 转译](layer2_translation.md)。
+第三层的通信、DSH / Codex 接入和工单设计见 [玩家交互与工单运行时](layer3_workflow.md)。
 
 老项目 `tools/spmcp` 从此是 legacy：只读、不再改动，作为行为参照与回退点。
 

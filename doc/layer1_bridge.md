@@ -17,12 +17,11 @@
 - `edge` 以登记时的读数为基线，操作由 Bridge 设为 `changed`，登记回执包含 `baseline` 和 `baseline_known`。
 - 登记时绑定对象和字段读取器。每 0.5 秒检查订阅，不按规则反复扫描单位表。一次采样内部仍有重复读取，见下方。
 - 命中或状态变化写入部署目录的 `comms/outbox.jsonl`，事件带 `event_id`、`watch_id`、`world_generation`、`kind` 和 `evidence`。一次性命中会冻结事件，追加失败时重试同一条，写入后退休。其他事件当前按尽力写入处理。
-- 工单消费者尚待接入。部署后可用一个已知可读的单位字段验证登记，再触发变化并检查 JSONL。使用 MCP 前先检查 [第二层兼容缺口](layer2_translation.md)。
+- 第二层已支持游标轮询。[第三层工单消费者](layer3_workflow.md)尚待接入。部署后可用一个已知可读的单位字段验证登记，再触发变化并检查 JSONL。使用 MCP 前先检查 [第二层 Watch 登记与事件读回](layer2_translation.md)。
 
 ## 当前审查发现
 
-- getter 异常会被折叠成 null。`edge` 在有初始值时可能把读失败发成 `evidence:true`；连续采样同一真实 null 也可能重复报变化。需要区分读取失败和合法空值，并随每次确认的变化更新基线状态。
-- 共享读数只用于前置检查。`Evaluate` 仍逐规则再读 getter，同一字段的多条规则会产生重复读取，也可能拿到不同读数。
+- 字段读取失败记为非证据。相同单位与字段在一个采样周期共享一次读数。
 - `ObjectStillBound` 只比对绑定对象上的 ID。对象退出游戏列表后如果该引用仍可读，检查可能继续通过。对象失效信号仍需用实机验证。
 
 ## Hardening from the 2026-11-05 live test

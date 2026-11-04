@@ -25,6 +25,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
+using System.IO;
 using Noesis;
 using Newtonsoft.Json.Linq;
 
@@ -36,15 +37,15 @@ namespace SeaPowerAgentBridge
 
         private const double MinW = 520;
         private const double MinH = 300;
-        private const double HeaderH = 30;
+        private const double PortraitSize = 66;
+        private const double HeaderH = PortraitSize + 8;
         private const double RowH = 18;
-        private const double RowPadH = 2;
         private const int MaxRowLines = 4;
         private static int _maxRowLines = 6;
         private const double ColSpine = 1;
         private const double AgentColumnShare = 0.65;
         private const double InputH = 30;
-        private const double FooterH = 20;
+        private const double FooterH = 30;
         // float, not double: Noesis Thickness only takes floats, and a double here
         // turned every Padding/Margin into a CS1503 instead of a value.
         private const float Gutter = 8;
@@ -56,6 +57,7 @@ namespace SeaPowerAgentBridge
         private static TextBlock _linkText;
         private static TextBlock _genText;
         private static StackPanel _logPanel;
+        private static Border _logViewport;
         private static TextBlock _logEmpty;
         private static TextBlock _logFooter;
         private static StackPanel _orderPanel;
@@ -64,9 +66,23 @@ namespace SeaPowerAgentBridge
         private static TextBlock _sendLabel;
         private static TextBlock _statusText;
         private static TextBlock _badgeText;
+        private static Border _stopButton;
+        private static double _stopQueuedUntil;
+        private static Border _portraitFrame;
+        private static Image _portraitImage;
+        private static UnityEngine.Texture2D _portraitTexture;
+        private static string _target = "dsh";
+        private static string _portrait = "Auto";
 
         private static bool _visible;
         private static bool _armed;
+        private static int _boxClickFrame = -1;
+        private static int _submitFrame = -1;
+
+        internal static bool ClaimedClickThisFrame
+        {
+            get { return _armed && _boxClickFrame == UnityEngine.Time.frameCount; }
+        }
         private static int _scrollBack;
 
         // The transcript is laid out in *rows*, not items: one assistant line can wrap to four
@@ -86,8 +102,8 @@ namespace SeaPowerAgentBridge
         }
 
         private static int _installBucket = -1;
-        private static int _rowCount;
-        private static int _visibleRows;
+        private static int _maxScrollBack;
+        private static int _pageRows;
         private static TextBlock _chanHead;
 
         /// The console shell hands its content well in here; the page then fills it
@@ -138,11 +154,8 @@ namespace SeaPowerAgentBridge
                     "DisplayAreaGrid was not found as a Panel under the tactical view; "
                     + "nothing was inserted", false);
 
-            if (ShellHost != null)
-            {
-                host = ShellHost;
-                _embedded = true;
-            }
+            _embedded = ShellHost != null;
+            if (_embedded) host = ShellHost;
             _host = host;
             _keyName = "";
             double mw = Convert.ToDouble(SettingFloat("MaxWidth", 1320f, 480f, 4000f), CultureInfo.InvariantCulture);
@@ -195,23 +208,19 @@ namespace SeaPowerAgentBridge
             ShellHost = content;
             _embedded = true;
             if (_wrap == null) return;
-            if (!ReferenceEquals(_host, content))
+            Panel parent = _wrap.Parent as Panel;
+            if (!ReferenceEquals(parent, content))
             {
-                try
-                {
-                    Panel parent = _wrap.Parent as Panel;
-                    if (parent != null) parent.Children.Remove(_wrap);
-                }
-                catch (Exception) { }
-                try { content.Children.Add(_wrap); }
-                catch (Exception) { }
-                _host = content;
+                if (parent != null) parent.Children.Remove(_wrap);
+                content.Children.Add(_wrap);
             }
+            _host = content;
             ApplyGeometry();
         }
 
         public static JObject Remove()
         {
+            _autoInstall = false;
             if (_wrap == null)
             {
                 JObject o = new JObject();
@@ -219,14 +228,29 @@ namespace SeaPowerAgentBridge
                 o["removed"] = false;
                 return o;
             }
-            try { if (_host != null) _host.Children.Remove(_wrap); }
+            try
+            {
+                Panel parent = _wrap.Parent as Panel;
+                if (parent != null) parent.Children.Remove(_wrap);
+            }
             catch (Exception ex) { Core.Log("comms remove failed: " + ex.GetType().Name); }
             _wrap = null;
+            _host = null;
+            ShellHost = null;
+            _embedded = false;
             _outer = null;
             _logPanel = null;
+            _logViewport = null;
             _orderPanel = null;
             _input = null;
             _sendButton = null;
+            if (_portraitImage != null) _portraitImage.Source = null;
+            if (_portraitTexture != null) UnityEngine.Object.Destroy(_portraitTexture);
+            _portraitTexture = null;
+            _portraitImage = null;
+            _portraitFrame = null;
+            _stopButton = null;
+            _stopQueuedUntil = 0;
             _visible = false;
             _armed = false;
             _signature = -1;
@@ -249,7 +273,12 @@ namespace SeaPowerAgentBridge
 
         public static JObject Show(bool on)
         {
-            if (_wrap == null) return Install();
+            if (_wrap == null)
+            {
+                if (on) return Install();
+                _autoInstall = false;
+                return State();
+            }
             _visible = on;
             try { _wrap.Visibility = on ? Visibility.Visible : Visibility.Collapsed; }
             catch (Exception) { }
@@ -260,6 +289,7 @@ namespace SeaPowerAgentBridge
         // ================================================== tree
         private static void BuildTree()
         {
+            _paintSig = "";
             _wrap = new Grid();
             _wrap.Name = WindowName;
             _wrap.Background = new SolidColorBrush(Color.FromArgb(243, 6, 14, 24));
@@ -314,12 +344,69 @@ namespace SeaPowerAgentBridge
             _statusText.TextWrapping = TextWrapping.NoWrap;
             _statusText.Foreground = new SolidColorBrush(Color.FromArgb(255, 130, 170, 200));
             _statusText.Text = "…";
-            footer.Child = _statusText;
+            Grid footerGrid = new Grid();
+            footerGrid.ColumnDefinitions.Add(Col(150));
+            footerGrid.ColumnDefinitions.Add(Col(124));
+            footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            ComboBox target = FooterSelector(footerGrid, 0, new[] { "DSH", "Codex (WIP)" }, _target == "codex" ? 1 : 0);
+            target.SelectionChanged += delegate
+            {
+                _target = target.SelectedIndex == 1 ? "codex" : "dsh";
+                _scrollBack = 0;
+                UpdatePortrait();
+                Refresh(true);
+            };
+            string[] portraits = { "Auto", "claude", "deepseek", "gemini", "glm", "gpt", "kimi", "Qwen" };
+            ComboBox portrait = FooterSelector(footerGrid, 1, portraits, Math.Max(0, Array.IndexOf(portraits, _portrait)));
+            portrait.SelectionChanged += delegate
+            {
+                if (portrait.SelectedIndex < 0) return;
+                _portrait = portraits[portrait.SelectedIndex];
+                UpdatePortrait();
+            };
+            _statusText.Margin = new Thickness(6, 0, 0, 0);
+            _statusText.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(_statusText, 2);
+            footerGrid.Children.Add(_statusText);
+            footer.Child = footerGrid;
             Grid.SetRow(footer, 3);
             root.Children.Add(footer);
 
             _outer.Child = root;
             _wrap.Children.Add(_outer);
+        }
+
+        private static ComboBox FooterSelector(Grid grid, int column, string[] choices, int selected)
+        {
+            ComboBox selector = new ComboBox();
+            selector.FontSize = 12;
+            selector.Margin = new Thickness(0, 0, 4, 0);
+            foreach (string choice in choices)
+                selector.Items.Add(new ComboBoxItem { Content = (column == 0 ? "Target: " : "Portrait: ") + choice });
+            selector.SelectedIndex = selected;
+            Grid.SetColumn(selector, column);
+            grid.Children.Add(selector);
+            return selector;
+        }
+
+        private static void UpdatePortrait()
+        {
+            if (_portraitFrame == null) return;
+            _portraitFrame.Child = _badgeText;
+            _portraitImage.Source = null;
+            if (_portraitTexture != null) UnityEngine.Object.Destroy(_portraitTexture);
+            _portraitTexture = null;
+            string name = _portrait == "Auto" ? (_target == "codex" ? "gpt" : "deepseek") : _portrait;
+            try
+            {
+                string file = System.IO.Path.Combine(Core.ModDir(), "portrait", name + ".png");
+                if (!File.Exists(file)) return;
+                _portraitTexture = new UnityEngine.Texture2D(2, 2, UnityEngine.TextureFormat.RGBA32, false);
+                if (!UnityEngine.ImageConversion.LoadImage(_portraitTexture, File.ReadAllBytes(file), true)) return;
+                _portraitImage.Source = new TextureSource(_portraitTexture);
+                _portraitFrame.Child = _portraitImage;
+            }
+            catch (Exception e) { Core.Log("comms portrait " + name + ": " + e.Message); }
         }
 
         private static Border BuildHeader()
@@ -329,17 +416,13 @@ namespace SeaPowerAgentBridge
             bar.Padding = new Thickness(Gutter, 3, Gutter, 3);
 
             Grid g = new Grid();
-            g.ColumnDefinitions.Add(Col(34));
+            g.ColumnDefinitions.Add(Col(PortraitSize + 4));
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(Col(210));
 
-            // No PNG loader is reachable from this build, so the "portrait" is a call
-            // sign badge: honest placeholders beat a broken image icon. The name and
-            // call sign are setting.ini values, which is the seam a persona would
-            // later grow from without this page changing.
             Border badge = new Border();
-            badge.Width = 30;
-            badge.Height = 22;
+            badge.Width = (float)PortraitSize;
+            badge.Height = (float)PortraitSize;
             badge.Background = new SolidColorBrush(Color.FromArgb(255, 20, 54, 82));
             badge.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 90, 170, 220));
             badge.BorderThickness = new Thickness(1);
@@ -349,7 +432,9 @@ namespace SeaPowerAgentBridge
             _badgeText.VerticalAlignment = VerticalAlignment.Center;
             _badgeText.Foreground = new SolidColorBrush(Color.FromArgb(255, 160, 220, 255));
             _badgeText.Text = CommsBridge.AgentCall;
-            badge.Child = _badgeText;
+            _portraitFrame = badge;
+            _portraitImage = new Image { Stretch = Stretch.UniformToFill };
+            UpdatePortrait();
             Grid.SetColumn(badge, 0);
             g.Children.Add(badge);
 
@@ -429,6 +514,7 @@ namespace SeaPowerAgentBridge
             inner.Orientation = Orientation.Vertical;
             inner.Children.Add(_logPanel);
             box.Child = inner;
+            _logViewport = box;
             try { box.MouseWheel += new MouseWheelEventHandler(OnWheel); }
             catch (Exception ex) { Core.Log("comms wheel not wired: " + ex.GetType().Name); }
             Grid.SetRow(box, 1);
@@ -534,8 +620,77 @@ namespace SeaPowerAgentBridge
             Grid.SetColumn(_sendButton, 2);
             g.Children.Add(_sendButton);
 
+            g.ColumnDefinitions.Add(Col(6));
+            g.ColumnDefinitions.Add(Col(64));
+            _stopButton = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(255, 73, 33, 37)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 195, 107, 107)),
+                BorderThickness = new Thickness(1),
+                Child = new TextBlock
+                {
+                    Text = "STOP",
+                    FontSize = 12,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 200, 200))
+                }
+            };
+            _stopButton.MouseLeftButtonDown += OnStopClick;
+            Grid.SetColumn(_stopButton, 4);
+            g.Children.Add(_stopButton);
+
             row.Child = g;
             return row;
+        }
+
+        private static bool CanStop(JObject state)
+        {
+            string generation = AsStr(state["generation"]);
+            return _target == "dsh" && AsStr(state["link"]) == "attached" &&
+                !string.IsNullOrEmpty(AsStr(state["sessionId"])) &&
+                (generation == "working" || generation == "executing");
+        }
+
+        private static void OnStopClick(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            JObject state = CommsBridge.State();
+            if (!CanStop(state) || UnityEngine.Time.realtimeSinceStartup < _stopQueuedUntil) return;
+            string temp = null;
+            try
+            {
+                string run = System.IO.Path.Combine(Core.ModDir(), "comms", "run");
+                System.IO.Directory.CreateDirectory(run);
+                string requestFile = System.IO.Path.Combine(run, "dsh.stop.json");
+                if (System.IO.File.Exists(requestFile) &&
+                    DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(requestFile) > TimeSpan.FromSeconds(5))
+                    System.IO.File.Delete(requestFile);
+
+                JObject request = new JObject();
+                request["sessionId"] = AsStr(state["sessionId"]);
+                request["expiresAt"] = (DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds + 5000;
+                temp = requestFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                System.IO.File.WriteAllText(temp, request.ToString(Newtonsoft.Json.Formatting.None));
+                System.IO.File.Move(temp, requestFile);
+                _stopQueuedUntil = UnityEngine.Time.realtimeSinceStartup + 5;
+                _status = "DSH stop requested";
+            }
+            catch (Exception ex)
+            {
+                _status = "DSH stop request failed";
+                Core.Log("comms stop: " + ex.Message);
+            }
+            finally
+            {
+                if (temp != null)
+                {
+                    try { System.IO.File.Delete(temp); }
+                    catch (System.IO.IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+            }
+            Refresh(true);
         }
 
         private static Border Caption(string text)
@@ -620,15 +775,14 @@ namespace SeaPowerAgentBridge
             if (left + (double)_w > hostW) left = Math.Max(0, hostW - (double)_w);
             if (top + (double)_h > hostH) top = Math.Max(0, hostH - (double)_h);
 
-            // Embedded: the shell owns the frame, so the page takes the whole content
-            // well and its header row folds away (the shell prints the same callsign).
+            // The shell owns the frame; the page still displays its portrait and target.
             if (_embedded)
             {
                 _w = (float)hostW;
                 _h = (float)hostH;
                 left = 0;
                 top = 0;
-                if (_headRow != null) _headRow.Height = new GridLength(0f);
+
             }
 
             _wrap.Width = _w;
@@ -647,8 +801,9 @@ namespace SeaPowerAgentBridge
         private static void OnBoxClick(object sender, MouseButtonEventArgs e)
         {
             _armed = true;
-            UiBridge.SetTyping(true, "comms box click");
-            _status = "typing";
+            _boxClickFrame = UnityEngine.Time.frameCount;
+            JObject typing = UiBridge.SetTyping(true, "comms box click", _input);
+            _status = (bool?)typing["ok"] == true ? "typing" : "typing lock unavailable";
             Refresh(true);
         }
 
@@ -657,16 +812,15 @@ namespace SeaPowerAgentBridge
             SubmitBox("send button");
         }
 
-        // Keys that reach the TextBox itself. Enter is consumed by its class handler,
-        // so the real Enter path is HandleKey from the root tunnel; this is for the
-        // keys the class handler passes through.
+        // The root tunnel and the TextBox share the same submit path.
         private static void OnBoxKey(object sender, KeyEventArgs e)
         {
             try
             {
                 if (e == null) return;
                 string name = e.Key.ToString();
-                if (name == "Escape") { ReleaseTyping("escape in box"); }
+                if (name == "Escape" || name == "Enter" || name == "Return")
+                    e.Handled = HandleKey(name);
             }
             catch (Exception) { }
         }
@@ -687,28 +841,30 @@ namespace SeaPowerAgentBridge
             }
 
             if (!_visible || _wrap == null) return false;
-            if (name == "Escape" && _armed)
+            bool typing = _armed && UiBridge.Typing;
+            if (name == "Escape" && typing)
             {
                 ReleaseTyping("escape");
                 return true;
             }
             // Noesis reports the primary name Return; comparing only "Enter" is why the
             // inspector's Enter looked dead for two rounds.
-            if ((name == "Enter" || name == "Return") && _armed)
+            if ((name == "Enter" || name == "Return") && typing)
             {
                 SubmitBox("enter key");
                 return true;
             }
+            if (typing) return false;
             // Scrolling must not need the mouse: the wheel handler only fires while the pointer
             // is over the panel, which is useless when the player is reading a long answer.
             if (name == "PageUp" || name == "Prior")
             {
-                ScrollBy(_visibleRows > 0 ? _visibleRows : 1);
+                ScrollBy(_pageRows > 0 ? _pageRows : 1);
                 return true;
             }
             if (name == "PageDown" || name == "Next")
             {
-                ScrollBy(-(_visibleRows > 0 ? _visibleRows : 1));
+                ScrollBy(-(_pageRows > 0 ? _pageRows : 1));
                 return true;
             }
             if (name == "Up") { ScrollBy(1); return true; }
@@ -720,7 +876,8 @@ namespace SeaPowerAgentBridge
 
         private static void SubmitBox(string source)
         {
-            if (_input == null) return;
+            if (_input == null || !_visible || _submitFrame == UnityEngine.Time.frameCount) return;
+            _submitFrame = UnityEngine.Time.frameCount;
             string text = null;
             try { text = Convert.ToString(_input.Text); }
             catch (Exception) { }
@@ -735,10 +892,20 @@ namespace SeaPowerAgentBridge
             {
                 JObject req = new JObject();
                 req["text"] = text;
+                req["target"] = _target;
                 JObject r = CommsBridge.Send(req);
-                _lastSubmitNote = "queued #" + Convert.ToString(r["id"], CultureInfo.InvariantCulture);
-                _status = "queued for harness";
-                try { _input.Text = ""; } catch (Exception) { }
+                if ((bool?)r["queued"] == true)
+                {
+                    _lastSubmitNote = _target.ToUpperInvariant() + " queued #" + Convert.ToString(r["id"], CultureInfo.InvariantCulture);
+                    _status = "queued for " + _target;
+                    _input.Text = "";
+                }
+                else
+                {
+                    _lastSubmitNote = "";
+                    _status = "send failed: " + ((string)r["error"] ?? "outbox write failed");
+                    Core.Log("comms send failed (" + source + "): " + _status);
+                }
             }
             catch (Exception ex)
             {
@@ -764,32 +931,19 @@ namespace SeaPowerAgentBridge
         /// </summary>
         private static void ScrollBy(int rows)
         {
-            if (rows == 0) return;
-            _scrollBack += rows;
-            if (_scrollBack < 0) _scrollBack = 0;
-            int maxBack = _rowCount - _visibleRows;
-            if (maxBack < 0) maxBack = 0;
-            if (_scrollBack > maxBack) _scrollBack = maxBack;
+            int next = Math.Max(0, Math.Min(_maxScrollBack, _scrollBack + rows * (int)RowH));
+            if (next == _scrollBack) return;
+            _scrollBack = next;
             Refresh(true);
         }
 
         private static void OnWheel(object sender, MouseWheelEventArgs e)
         {
-            try
-            {
-                int delta = e.Delta > 0 ? 3 : -3;
-                _scrollBack += delta;
-                if (_scrollBack < 0) _scrollBack = 0;
-                // Never scroll past the oldest row: without this the wheel walked into empty
-                // space and the column looked broken rather than "at the top".
-                int maxBack = _rowCount - _visibleRows;
-                if (maxBack < 0) maxBack = 0;
-                if (_scrollBack > maxBack) _scrollBack = maxBack;
-                Refresh(true);
-            }
-            catch (Exception) { }
+            if (e.Delta == 0) return;
+            int steps = Math.Max(1, Math.Abs(e.Delta) / 120);
+            ScrollBy(e.Delta > 0 ? 3 * steps : -3 * steps);
+            e.Handled = true;
         }
-
         // ================================================== refresh
         private static long Signature(List<CommsItem> items, JObject st)
         {
@@ -797,7 +951,11 @@ namespace SeaPowerAgentBridge
             for (int i = 0; i < items.Count; i++)
             {
                 sig = (sig ^ items[i].Seq) * 1099511628211L;
-                if (items[i].Kind == "assistant") sig = (sig ^ items[i].Text.Length) * 1099511628211L;
+                if (items[i].Kind == "assistant")
+                {
+                    sig = (sig ^ (items[i].Text ?? "").GetHashCode()) * 1099511628211L;
+                    sig = (sig ^ (items[i].Thinking ?? "").GetHashCode()) * 1099511628211L;
+                }
             }
             sig = (sig ^ items.Count) * 1099511628211L;
             string link = Convert.ToString(st["link"]);
@@ -809,6 +967,11 @@ namespace SeaPowerAgentBridge
             sig = (sig ^ _scrollBack) * 1099511628211L;
             sig = (sig ^ _armed.GetHashCode()) * 1099511628211L;
             for (int i = 0; i < _status.Length; i++) sig = (sig ^ _status[i]) * 1099511628211L;
+            sig = (sig ^ _target.GetHashCode()) * 1099511628211L;
+            if (_armed && _input != null)
+                sig = (sig ^ (Convert.ToString(_input.Text) ?? "").GetHashCode()) * 1099511628211L;
+            if (_logViewport != null)
+                sig = (sig ^ ((int)_logViewport.ActualHeight)) * 1099511628211L;
             return sig;
         }
 
@@ -857,6 +1020,8 @@ namespace SeaPowerAgentBridge
             }
             catch (Exception ex)
             {
+                _signature = -1;
+                _paintSig = "";
                 Core.Log("comms tick failed: " + ex.GetType().Name);
             }
         }
@@ -866,6 +1031,16 @@ namespace SeaPowerAgentBridge
             if (_wrap == null) return;
             JObject st = CommsBridge.State();
             List<CommsItem> items = CommsBridge.Snapshot();
+            items.RemoveAll(item => item.Target != _target);
+            if (_stopButton != null)
+            {
+                bool canStop = CanStop(st);
+                if (!canStop && _target == "dsh") _stopQueuedUntil = 0;
+                bool enabled = canStop && UnityEngine.Time.realtimeSinceStartup >= _stopQueuedUntil;
+                _stopButton.Visibility = _target == "dsh" ? Visibility.Visible : Visibility.Collapsed;
+                _stopButton.IsEnabled = enabled;
+                _stopButton.Opacity = enabled ? 1.0f : 0.45f;
+            }
             long sig = Signature(items, st);
             if (!force && sig == _signature) return;
             _signature = sig;
@@ -878,10 +1053,10 @@ namespace SeaPowerAgentBridge
 
             if (_badgeText != null) _badgeText.Text = CommsBridge.AgentCall;
             if (_title != null)
-                _title.Text = CommsBridge.AgentName + (linked ? " / ONLINE" : " / OFFLINE");
+                _title.Text = _target == "codex" ? "CODEX / DESKTOP" : CommsBridge.AgentName + (linked ? " / ONLINE" : " / OFFLINE");
             if (_linkText != null)
             {
-                _linkText.Text = "LINK " + (link == null ? "?" : link.ToUpperInvariant());
+                _linkText.Text = "DSH " + (link == null ? "?" : link.ToUpperInvariant());
                 _linkText.Foreground = new SolidColorBrush(linked
                     ? Color.FromArgb(255, 120, 230, 160)
                     : Color.FromArgb(255, 255, 190, 90));
@@ -908,7 +1083,7 @@ namespace SeaPowerAgentBridge
                     : Color.FromArgb(255, 150, 210, 240));
             }
 
-            PaintLog(items, st);
+            PaintLog(items, st, sig);
             PaintOrder();
 
             if (_statusText != null)
@@ -947,16 +1122,6 @@ namespace SeaPowerAgentBridge
             return n;
         }
 
-        private static int RowLines(string text)
-        {
-            int per = CharsPerLine();
-            int len = string.IsNullOrEmpty(text) ? 1 : text.Length;
-            int lines = (len + per - 1) / per;
-            if (lines < 1) lines = 1;
-            if (lines > _maxRowLines) lines = _maxRowLines;
-            return lines;
-        }
-
         private static string ClipToRows(string text)
         {
             if (string.IsNullOrEmpty(text)) return text;
@@ -964,11 +1129,6 @@ namespace SeaPowerAgentBridge
             if (text.Length <= limit) return text;
             // Say so instead of silently cutting: a clipped answer must not read as a short one.
             return text.Substring(0, limit - 2) + " …";
-        }
-
-        private static double RowHeight(string text)
-        {
-            return (double)RowLines(text) * (double)RowH + RowPadH;
         }
 
         /// <summary>
@@ -982,7 +1142,7 @@ namespace SeaPowerAgentBridge
                 CommsItem it = items[i];
                 if (it.Kind == "user")
                 {
-                    texts.Add("YOU>  " + ClipToRows(Clean(it.Text)));
+                    texts.Add("YOU>  " + it.Text);
                     colors.Add(Color.FromArgb(255, 255, 214, 130));
                 }
                 else if (it.Kind == "assistant")
@@ -990,7 +1150,7 @@ namespace SeaPowerAgentBridge
                     bool hasText = !string.IsNullOrEmpty(it.Text);
                     if (hasText)
                     {
-                        texts.Add("TA>  " + ClipToRows(Clean(it.Text)));
+                        texts.Add("TA>  " + it.Text);
                         colors.Add(Color.FromArgb(255, 214, 240, 255));
                     }
                     // The tool name is NOT history either: the step's reasoning becomes the one
@@ -1007,26 +1167,25 @@ namespace SeaPowerAgentBridge
             }
         }
 
-        private static void PaintLog(List<CommsItem> items, JObject st)
+        private static void PaintLog(List<CommsItem> items, JObject st, long contentSignature)
         {
             if (_logPanel == null) return;
 
             // Rebuild only when the visible window actually changed: replacing the child set
             // every tick is wasted main-thread work and keeps the panel from settling.
-            int endSig = items.Count - Math.Max(0, _scrollBack);
-            string sig = items.Count + "|" + _scrollBack + "|" + _armed + "|" + endSig + "|"
-                + (items.Count > 0 ? items[items.Count - 1].Seq : 0) + "|"
-                + (items.Count > 0 ? items[0].Seq : 0);
+            string sig = contentSignature + "|" + (int)_w + "|" + (int)_h;
             if (sig == _paintSig) return;
             _paintSig = sig;
 
             _logPanel.Children.Clear();
+            _logPanel.RenderTransform = null;
             _total = items.Count;
 
-            if (items.Count == 0)
+            if (items.Count == 0 && !_armed)
             {
-                _rowCount = 0;
-                _visibleRows = 0;
+                _logPanel.Height = (float)(RowH * 2);
+                _maxScrollBack = _scrollBack = 0;
+                _pageRows = 0;
                 if (_logEmpty != null) _logPanel.Children.Add(_logEmpty);
                 if (_logFooter != null)
                     _logFooter.Text = Convert.ToString(st["linkNote"]);
@@ -1039,48 +1198,15 @@ namespace SeaPowerAgentBridge
             List<string> texts = new List<string>();
             List<Color> colors = new List<Color>();
             CollectRows(items, texts, colors);
-            _rowCount = texts.Count;
 
-            double boxH = Math.Max(RowH * 3, (double)_h - HeaderH - InputH - FooterH - 40);
-            if (_armed) boxH -= (double)RowH;   // the typing line takes a row
-
-            // Walk back from the newest row and stop when the next one would not fit. This is
-            // what bounds the window to what can actually be painted.
-            double acc = 0;
-            int fit = 0;
-            for (int i = texts.Count - 1; i >= 0; i--)
-            {
-                double h = RowHeight(texts[i]);
-                if (fit > 0 && acc + h > boxH) break;
-                acc += h;
-                fit++;
-            }
-            if (fit < 1) fit = 1;
-            _visibleRows = fit;
-
-            int maxBack = texts.Count - fit;
-            if (maxBack < 0) maxBack = 0;
-            if (_scrollBack > maxBack) _scrollBack = maxBack;
-
-            int end = texts.Count - Math.Max(0, _scrollBack);
-            if (end > texts.Count) end = texts.Count;
-            int start = Math.Max(0, end - fit);
-
+            double viewportH = _logViewport == null ? 0 : (double)_logViewport.ActualHeight;
+            double boxH = (viewportH > 0 ? viewportH : (double)_h - HeaderH - InputH - FooterH - 40) - 2;
+            string draft = "";
             if (_armed && _input != null)
             {
                 string typed = Convert.ToString(_input.Text);
-                TextBlock live = Row("YOU>  " + ClipToRows(string.IsNullOrEmpty(typed) ? "…" : typed),
-                    Color.FromArgb(255, 255, 214, 130));
-                _logPanel.Children.Add(live);
+                draft = "YOU>  " + ClipToRows(string.IsNullOrEmpty(typed) ? "…" : typed);
             }
-
-            for (int i = start; i < end; i++)
-            {
-                TextBlock tb = Row(texts[i], colors[i]);
-                tb.Height = (float)RowHeight(texts[i]);
-                _logPanel.Children.Add(tb);
-            }
-            _drawn = end - start;
 
             // One live "thinking" row: the newest reasoning tail, replaced in place on every
             // rebuild so it never accumulates. Dimmer and prefixed so it can never be read as
@@ -1101,44 +1227,67 @@ namespace SeaPowerAgentBridge
                 string busyTool = AsStr(st["lastTool"]);
                 liveText = "◌ working" + (busyTool.Length > 0 ? " · " + busyTool : "");
             }
-            if (liveText.Length > 0 && !_armed && _logPanel != null)
+            int transcriptCount = texts.Count;
+            if (draft.Length > 0)
             {
-                _logPanel.Children.Add(Row(liveText, Color.FromArgb(255, 118, 156, 184)));
+                texts.Add(draft);
+                colors.Add(Color.FromArgb(255, 255, 214, 130));
+            }
+            else if (liveText.Length > 0)
+            {
+                texts.Add(liveText);
+                colors.Add(Color.FromArgb(255, 118, 156, 184));
             }
 
+            // Measure the wrapped controls and scroll through their actual height.
+            float width = _logViewport != null && _logViewport.ActualWidth > 0
+                ? (float)_logViewport.ActualWidth : (float)LeftColumnWidth();
+            double viewport = Math.Max(1, boxH);
+            _pageRows = Math.Max(1, (int)(viewport / RowH));
+            List<TextBlock> rows = new List<TextBlock>(texts.Count);
+            double[] offsets = new double[texts.Count + 1];
+            for (int i = 0; i < texts.Count; i++)
+            {
+                TextBlock row = Row(texts[i], colors[i]);
+                row.Measure(new Noesis.Size(width, float.PositiveInfinity));
+                rows.Add(row);
+                offsets[i + 1] = offsets[i] + row.DesiredSize.Height;
+            }
 
-            // Height is the sum of the rows actually painted, not fit * RowH: a wrapped row is
-            // up to MaxRowLines tall, and the old arithmetic left the last row half outside the
-            // border (it looked like a rendering bug rather than a sizing one).
-            double painted = 0;
-            for (int i = start; i < end; i++) painted += RowHeight(texts[i]);
-            if (liveText.Length > 0 && !_armed) painted += RowHeight(liveText);
-            if (painted < (double)RowH) painted = (double)RowH;
-            painted += 2;   // slack for fractional layout: one pixel shaves the descenders
-            if (_logPanel != null) _logPanel.Height = (float)painted;
-
+            double totalHeight = offsets[texts.Count];
+            _maxScrollBack = (int)Math.Ceiling(Math.Max(0, totalHeight - viewport));
+            _scrollBack = Math.Min(_scrollBack, _maxScrollBack);
+            double top = Math.Max(0, totalHeight - viewport - _scrollBack);
+            double bottom = top + viewport;
+            int start = 0;
+            while (start < rows.Count && offsets[start + 1] <= top) start++;
+            int end = start;
+            while (end < rows.Count && offsets[end] < bottom)
+                _logPanel.Children.Add(rows[end++]);
+            _drawn = Math.Max(0, Math.Min(end, transcriptCount) - start);
+            _logPanel.Height = (float)Math.Max(RowH, offsets[end] - offsets[start]);
+            _logPanel.RenderTransform = new TranslateTransform { Y = (float)(offsets[start] - top) };
             if (_logFooter != null)
             {
                 // The tab strip rides on the footer: it is the one line both pages
                 // always paint, so the operator can see which tab the hotkey will switch
                 // to without either page growing its own chrome.
-                string tail = ConsoleHost.Strip() + "   " + _drawn + " of " + texts.Count + " rows · " + items.Count + " events";
-                if (_scrollBack > 0) tail = tail + " · " + _scrollBack + " newer (wheel down)";
+                string tail = ConsoleHost.Strip() + "   " + _drawn + " of " + transcriptCount + " messages · " + items.Count + " events";
+                if (_scrollBack > 0) tail = tail + " · history (wheel down for latest)";
                 else tail = tail + " · live";
                 _logFooter.Text = tail;
             }
 
-            // A replaced child set does not re-measure on its own in this build: without a
-            // definite height the rows are built, counted, and then never arranged - which is
-            // exactly how an "empty" column with drawn>0 happens. The height above is the sum
-            // of the rows actually painted; do NOT re-derive it from fit * RowH here, that
-            // arithmetic assumes one row per line and cut the bottom row in half.
             Settle();
 
             // If the panel still has no height the rows were built before the content well
             // was arranged, and nothing would show until some unrelated click forced a layout
             // pass. Drop the signature so the next tick paints again against the real size.
-            if (_logPanel != null && (double)_logPanel.ActualHeight <= 0.5) _signature = -1;
+            if (_logPanel != null && (double)_logPanel.ActualHeight <= 0.5)
+            {
+                _signature = -1;
+                _paintSig = "";
+            }
         }
 
         /// <summary>

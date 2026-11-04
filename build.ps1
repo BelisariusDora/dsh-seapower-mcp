@@ -138,6 +138,31 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     } else {
         throw "mcp_server.py is missing from $here - refusing to half-deploy"
     }
+    Copy-Item (Join-Path $here 'compact_replies.py') (Join-Path $modDir 'compact_replies.py') -Force
+    foreach ($file in 'track_briefs.py','track_mlp_weights.json','track_motion.py','watch_events.py') {
+        Copy-Item (Join-Path $here $file) (Join-Path $modDir $file) -Force
+    }
+    $harnessDir = Join-Path $modDir 'harness'
+    $harnessFiles = @{
+        'README.md' = 'HARNESS.md'
+        'DSH\README.md' = 'DSH.md'
+        'DSH\harness_link.js' = 'harness_link.js'
+        'DSH\dsh_tailer.js' = 'dsh_tailer.js'
+        'Codex\README.md' = 'CODEX_DEPLOY.md'
+        'Codex\codex_link.js' = 'codex_link.js'
+        'Codex\codex_desktop.ps1' = 'codex_desktop.ps1'
+        'Codex\codex.target.example.json' = 'codex.target.example.json'
+    }
+    foreach ($entry in $harnessFiles.GetEnumerator()) {
+        $destination = Join-Path $harnessDir $entry.Key
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $here ('comms\' + $entry.Value)) -Destination $destination -Force
+    }
+
+    $settings = Join-Path $modDir 'setting.ini'
+    if (!(Test-Path -LiteralPath $settings)) {
+        [IO.File]::WriteAllText($settings, "[MCP]`r`nCompactReplies=false`r`n")
+    }
     $startScript = Join-Path $here 'start_game.ps1'
     if (Test-Path $startScript) { Copy-Item $startScript (Join-Path $modDir 'start_game.ps1') -Force }
     # Read the destination back. A "deployed" line that was not verified is how a running
