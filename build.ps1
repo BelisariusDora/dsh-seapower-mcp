@@ -27,7 +27,7 @@ if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
 
 $anchorDll = $env:ANCHORCHAIN_DLL
 if (-not $anchorDll -or -not (Test-Path $anchorDll)) {
-    $anchorDll = 'E:\steam\steamapps\workshop\content\1286220\3380210757\AnchorChain.dll'
+    $anchorDll = Join-Path (Split-Path -Parent (Split-Path -Parent $gameRoot)) 'workshop\content\1286220\3380210757\AnchorChain.dll'
 }
 if (-not (Test-Path $anchorDll)) { throw "AnchorChain.dll not found: $anchorDll" }
 
@@ -124,6 +124,9 @@ if ($Deploy) {
 $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     if (-not (Test-Path $modDir)) { New-Item -ItemType Directory -Path $modDir -Force | Out-Null }
     Copy-Item $outDll (Join-Path $modDir 'SeaPowerAgentBridge.dll') -Force
+    $deployReadme = Get-Content -LiteralPath (Join-Path $here 'doc\DEPLOY.md') -Raw
+    $deployReadme = $deployReadme.Replace('../comms/DSH.md', 'harness/DSH/README.md').Replace('../comms/CODEX_DEPLOY.md', 'harness/Codex/README.md')
+    [IO.File]::WriteAllText((Join-Path $modDir 'README.md'), $deployReadme)
     Copy-Item $stampFile (Join-Path $modDir 'SeaPowerAgentBridge.build') -Force
     Copy-Item $anchorDll (Join-Path $modDir 'AnchorChain.dll') -Force
     $ini = Join-Path $here '_info.ini'
@@ -148,6 +151,7 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
         'DSH\README.md' = 'DSH.md'
         'DSH\harness_link.js' = 'harness_link.js'
         'DSH\dsh_tailer.js' = 'dsh_tailer.js'
+        'DSH\prompts\onceopen.md' = 'prompts\onceopen.md'
         'Codex\README.md' = 'CODEX_DEPLOY.md'
         'Codex\codex_link.js' = 'codex_link.js'
         'Codex\codex_desktop.ps1' = 'codex_desktop.ps1'

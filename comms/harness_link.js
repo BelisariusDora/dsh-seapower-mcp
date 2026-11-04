@@ -398,6 +398,30 @@ function createLink(options) {
   const rpcFn = opts.rpc || rpc;
   const cookie = opts.cookie || "";
   const now = opts.now || (() => Date.now());
+  const initializedSessions = new Set();
+  let onceopenLoaded = false;
+  const readGameWorld = opts.readGameWorld || ((done) => {
+    const request = http.get({
+      host: "127.0.0.1", port: cfg.bridgePort || 19080, path: "/comms/state", timeout: 1500
+    }, (response) => {
+      response.setEncoding("utf8");
+      let text = "";
+      response.on("data", (chunk) => {
+        text += chunk;
+        if (text.length > 65536) request.destroy(new Error("oversized comms state"));
+      });
+      response.on("error", done);
+      response.on("end", () => {
+        let reply;
+        try { reply = JSON.parse(text); } catch (e) { return done(e); }
+        if (response.statusCode !== 200 || !reply.ok || !reply.data ||
+            !Object.hasOwn(reply.data, "worldKey")) return done(new Error("Bridge lacks game-world support"));
+        done(null, reply.data.worldKey);
+      });
+    });
+    request.on("error", done);
+    request.on("timeout", () => request.destroy(new Error("Bridge state timed out")));
+  });
 
   const state = {
     phase: "starting",
@@ -759,7 +783,12 @@ function createLink(options) {
   // deliver to: the refusal has to stick until the write actually succeeds.
   function pinSession(sessionId) {
     try {
-      io.writeAtomic(cfg.pointerFile, JSON.stringify({ sessionId: sessionId, at: now(), source: "new" }));
+      const pointer = { sessionId, at: now(), source: "new" };
+      if (cfg.mode === "game-world") {
+        pointer.source = "game-world";
+        pointer.world = cfg.worldKey;
+      }
+      io.writeAtomic(cfg.pointerFile, JSON.stringify(pointer));
     } catch (e) {
       state.pinnedSession = sessionId;
       cfg.sessionId = null;
@@ -824,7 +853,7 @@ function createLink(options) {
   // disagree with it.
   function ensureSession(done) {
     if (cfg.sessionId) return done(null, cfg.sessionId);
-    if (cfg.mode === "new") return createSession(done);
+    if (cfg.mode === "new" || cfg.mode === "game-world") return createSession(done);
     const ptr = readPointer({ cfg: cfg, io: io });
     if (!ptr.ok) return done(ptr.kind, ptr.detail);
     if (cfg.trustPointer) {
@@ -914,12 +943,42 @@ function createLink(options) {
       log("line o" + start + " -> failed (not JSON)");
       return cb(null);
     }
+    if (cfg.mode === "game-world" && (msg.from !== "player" || msg.world !== cfg.worldKey)) {
+      const err = tryRecord({
+        phase: "delivery", outcome: "skipped", reason: "outside-current-game-dialogue",
+        key, offset: start, end, consumed: true, id: msg.id == null ? null : msg.id
+      });
+      if (err) return cb(criticalPersistFailure("record skipped game dialogue", err));
+      return cb(null);
+    }
+    let text = String(msg.text == null ? "" : msg.text);
+    let onceopen = false;
+    if (cfg.mode === "game-world") {
+      if (!onceopenLoaded) {
+        for (const row of readStateRows()) {
+          if (row.phase === "sending" && row.onceopen === true) initializedSessions.add(row.sessionId);
+        }
+        onceopenLoaded = true;
+      }
+      if (!initializedSessions.has(cfg.sessionId)) {
+        let context;
+        try {
+          context = io.readText(path.join(__dirname, "prompts", "onceopen.md")).trim();
+          if (!context) throw new Error("empty prompt");
+        } catch (e) {
+          log("cannot load prompts/onceopen.md: " + e.message);
+          return cb(e);
+        }
+        text = "<seapower-onceopen>\n" + context + "\n</seapower-onceopen>\n\n" + text;
+        onceopen = true;
+      }
+    }
     const requestId = requestIdForKey(key);
     const request = {
       requestId: requestId,
       sessionId: cfg.sessionId,
       mode: "queue",
-      content: [{ type: "text", text: String(msg.text == null ? "" : msg.text) }]
+      content: [{ type: "text", text: text }]
     };
     if (cfg.timeZone) request.clientTimeZone = cfg.timeZone;
     // The identity is on disk BEFORE the POST, so a crash mid-flight leaves a record that says
@@ -927,9 +986,10 @@ function createLink(options) {
     const pre = tryRecord({
       phase: "sending", key: key, offset: start, end: end,
       id: msg.id == null ? null : msg.id, requestId: requestId,
-      sessionId: cfg.sessionId, attempt: attempt
+      sessionId: cfg.sessionId, attempt: attempt, ...(onceopen ? { onceopen: true } : {})
     });
     if (pre) return cb(criticalPersistFailure("record the send of line o" + start, pre));
+    if (onceopen) initializedSessions.add(cfg.sessionId);
     state.counts.attempts++;
     rpcFn(cfg, cookie, "session/prompt", { request: request }, (res) => {
       const cls = classifyReply(res);
@@ -1125,7 +1185,52 @@ function createLink(options) {
     });
   }
 
+  function syncGameWorld(done) {
+    let settled = false;
+    readGameWorld((err, world) => {
+      if (settled) return;
+      settled = true;
+      if (err) return done(false);
+      if (cfg.worldKey === world) return done(!!world);
+      let pin;
+      try {
+        pin = JSON.parse(io.readText(cfg.pointerFile));
+      } catch (e) {
+        if (e.code !== "ENOENT") { log("cannot read game-world pointer: " + e.message); return done(false); }
+      }
+      const managed = pin && pin.source === "game-world";
+      if (world && managed && pin.world === world && pin.sessionId) {
+        cfg.worldKey = world;
+        adopt(pin.sessionId, "game-world", false);
+        return done(true);
+      }
+      try {
+        io.writeAtomic(cfg.pointerFile, JSON.stringify({ source: "game-world", world, sessionId: null, at: now() }));
+      } catch (e) {
+        log("cannot switch game world: " + e.message);
+        return done(false);
+      }
+      const previous = cfg.sessionId || (managed && pin.sessionId);
+      cfg.worldKey = world;
+      cfg.sessionId = null;
+      state.pinnedSession = null;
+      if (state.pauseReason === "pointer-write-failed") resume("mission changed");
+      if (!previous) return done(!!world);
+      rpcFn(cfg, cookie, "session/cancel", { request: { sessionId: previous } }, (res) => {
+        log(res && res.ok && res.value && res.value.accepted === true
+          ? "previous game session stop accepted" : "previous game session stop unconfirmed");
+        done(!!world);
+      });
+    });
+  }
+
   function tick(done) {
+    if (cfg.mode !== "game-world") return tickSession(done);
+    if (state.stopped || state.deliveryBlocked) return done(null);
+    syncGameWorld((ready) => ready ? tickSession(done) : done(null));
+  }
+
+  function tickSession(done) {
     if (state.stopped) return done(null);
     if (state.deliveryBlocked) return done(null);
     if (state.paused) {
@@ -1424,6 +1529,8 @@ function parseArgv(argv) {
     else if (a === "--host") cfg.host = argv[++i];
     else if (a === "--cwd") cfg.cwd = argv[++i];
     else if (a === "--new") cfg.mode = "new";
+    else if (a === "--game-world") cfg.mode = "game-world";
+    else if (a === "--bridge-port") cfg.bridgePort = Number(argv[++i]);
     else if (a === "--timezone") cfg.timeZone = argv[++i];
     else if (a === "--out") cfg.outDir = argv[++i];
     else if (a === "--pause-after") cfg.pauseAfter = Math.max(1, parseInt(argv[++i], 10) || DEFAULTS.pauseAfter);
@@ -1456,6 +1563,9 @@ function main() {
   cfg.once = cli.once;
   cfg.dryRun = cli.dryRun;
   cfg.resetCursor = cli.resetCursor === true;
+  if (cfg.mode === "game-world" && (cli.retry || cli.resetCursor)) {
+    throw new Error("--game-world cannot replay an old outbox or retry an old delivery");
+  }
   const log = makeLogger(cfg);
   try { fs.mkdirSync(path.dirname(cfg.logFile), { recursive: true }); } catch (e) { }
 

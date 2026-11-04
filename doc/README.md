@@ -1,5 +1,7 @@
 # spmcp_v2 — 第一层（游戏桥接）文档
 
+[从源码构建与安装发布包](DEPLOY.md)
+
 第二层的启动、工具映射和回执约定见 [MCP 转译](layer2_translation.md)。
 
 部署产物位于游戏的 `StreamingAssets/dsh-spmcp`。通过 `GET /ping` 比对加载中的 build stamp 和磁盘 stamp。

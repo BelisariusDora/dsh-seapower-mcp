@@ -40,6 +40,7 @@ namespace SeaPowerAgentBridge
         private const double PortraitSize = 66;
         private const double HeaderH = PortraitSize + 8;
         private const double RowH = 18;
+        private const int TranscriptTailRows = 20;
         private const int MaxRowLines = 4;
         private static int _maxRowLines = 6;
         private const double ColSpine = 1;
@@ -510,8 +511,7 @@ namespace SeaPowerAgentBridge
             box.Padding = new Thickness(0);
             box.ClipToBounds = true;
             box.IsHitTestVisible = true;
-            StackPanel inner = new StackPanel();
-            inner.Orientation = Orientation.Vertical;
+            Canvas inner = new Canvas();
             inner.Children.Add(_logPanel);
             box.Child = inner;
             _logViewport = box;
@@ -971,7 +971,10 @@ namespace SeaPowerAgentBridge
             if (_armed && _input != null)
                 sig = (sig ^ (Convert.ToString(_input.Text) ?? "").GetHashCode()) * 1099511628211L;
             if (_logViewport != null)
+            {
                 sig = (sig ^ ((int)_logViewport.ActualHeight)) * 1099511628211L;
+                sig = (sig ^ ((int)_logViewport.ActualWidth)) * 1099511628211L;
+            }
             return sig;
         }
 
@@ -1178,7 +1181,7 @@ namespace SeaPowerAgentBridge
             _paintSig = sig;
 
             _logPanel.Children.Clear();
-            _logPanel.RenderTransform = null;
+            Canvas.SetTop(_logPanel, 0);
             _total = items.Count;
 
             if (items.Count == 0 && !_armed)
@@ -1239,34 +1242,37 @@ namespace SeaPowerAgentBridge
                 colors.Add(Color.FromArgb(255, 118, 156, 184));
             }
 
-            // Measure the wrapped controls and scroll through their actual height.
+            // Give the stack a wrapping width and let Noesis arrange its natural height.
+            // Measuring detached text and fixing the stack to that estimate can clip the
+            // last wrapped line before the viewport's bottom padding even begins.
             float width = _logViewport != null && _logViewport.ActualWidth > 0
                 ? (float)_logViewport.ActualWidth : (float)LeftColumnWidth();
+            _logPanel.Width = width;
+            _logPanel.Height = float.NaN;
             double viewport = Math.Max(1, boxH);
             _pageRows = Math.Max(1, (int)(viewport / RowH));
-            List<TextBlock> rows = new List<TextBlock>(texts.Count);
-            double[] offsets = new double[texts.Count + 1];
             for (int i = 0; i < texts.Count; i++)
-            {
-                TextBlock row = Row(texts[i], colors[i]);
-                row.Measure(new Noesis.Size(width, float.PositiveInfinity));
-                rows.Add(row);
-                offsets[i + 1] = offsets[i] + row.DesiredSize.Height;
-            }
+                _logPanel.Children.Add(Row(texts[i], colors[i]));
+            // Keep the last glyphs clear of the content stack's bottom edge.
+            _logPanel.Children.Add(new Border { Height = 6, IsHitTestVisible = false });
+            Settle();
 
-            double totalHeight = offsets[texts.Count];
-            _maxScrollBack = (int)Math.Ceiling(Math.Max(0, totalHeight - viewport));
+            double tailSpace = texts.Count > 0 ? Math.Min(TranscriptTailRows * RowH, Math.Max(0, viewport - 2 * RowH)) : 0;
+            double maxTop = Math.Max(0, (double)_logPanel.ActualHeight + tailSpace - viewport);
+            _maxScrollBack = (int)Math.Ceiling(maxTop);
             _scrollBack = Math.Min(_scrollBack, _maxScrollBack);
-            double top = Math.Max(0, totalHeight - viewport - _scrollBack);
-            double bottom = top + viewport;
-            int start = 0;
-            while (start < rows.Count && offsets[start + 1] <= top) start++;
-            int end = start;
-            while (end < rows.Count && offsets[end] < bottom)
-                _logPanel.Children.Add(rows[end++]);
-            _drawn = Math.Max(0, Math.Min(end, transcriptCount) - start);
-            _logPanel.Height = (float)Math.Max(RowH, offsets[end] - offsets[start]);
-            _logPanel.RenderTransform = new TranslateTransform { Y = (float)(offsets[start] - top) };
+            double top = Math.Max(0, maxTop - _scrollBack);
+            Canvas.SetTop(_logPanel, (float)-top);
+
+            _drawn = 0;
+            double rowTop = 0;
+            for (int i = 0; i < transcriptCount && rowTop < top + viewport; i++)
+            {
+                TextBlock row = (TextBlock)_logPanel.Children[i];
+                double rowBottom = rowTop + row.ActualHeight + row.Margin.Top + row.Margin.Bottom;
+                if (rowBottom > top) _drawn++;
+                rowTop = rowBottom;
+            }
             if (_logFooter != null)
             {
                 // The tab strip rides on the footer: it is the one line both pages

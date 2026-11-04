@@ -67,6 +67,7 @@ function parseArgs(argv) {
     // Exit non-zero instead of waiting when a pinned session has no log yet. Off by default:
     // a pinned session that is not running yet is a normal state, not a crash.
     else if (a === '--strict-pin') out.strictPin = true;
+    else if (a === '--game-world') out.gameWorld = true;
   }
   return out;
 }
@@ -166,7 +167,7 @@ function readPointer(outDir) {
     return { ok: false, kind: 'pointer-invalid', sessionId: null, file, detail: String(text).slice(0, 80) };
   }
   if (!obj || !obj.sessionId) return { ok: false, kind: 'pointer-invalid', sessionId: null, file, detail: 'no sessionId field' };
-  return { ok: true, kind: 'pointer', sessionId: String(obj.sessionId), file, at: obj.at || null };
+  return { ok: true, kind: 'pointer', sessionId: String(obj.sessionId), file, at: obj.at || null, source: obj.source, world: obj.world };
 }
 
 /**
@@ -196,6 +197,9 @@ function resolveLog(opts, deps) {
   }
 
   const pinnedId = pointer.ok ? pointer.sessionId : null;
+  if (opts.gameWorld && (!pinnedId || pointer.source !== 'game-world' || !pointer.world)) {
+    return { ok: false, source: 'pointer', kind: 'awaiting-game-world' };
+  }
   const explicitId = opts.session ? String(opts.session) : null;
 
   // A subagent transcript is machinery, not the conversation: refuse it on every path, not
@@ -318,7 +322,7 @@ function project(evt) {
   const time = evt && evt.time;
   const data = (evt && evt.data) || {};
   if (t === 'user/message') {
-    const text = contentText(data.content);
+    const text = contentText(data.content).replace(/^<seapower-onceopen>\r?\n[\s\S]*?\r?\n<\/seapower-onceopen>\r?\n\r?\n/, '');
     // The harness records its own injected context as user/message: the runtime snapshot,
     // the skill-catalogue reminder, and compressed-history summaries. A player line never
     // starts with these, and showing them as speech would misreport who spoke.
@@ -539,7 +543,7 @@ function createTailer(options) {
           let evt;
           try { evt = JSON.parse(line); } catch (e) { continue; }
           const proj = project(evt);
-          if (proj) all.push(JSON.stringify(proj));
+          if (proj) all.push(JSON.stringify({ ...proj, sessionId: picked.sessionId }));
         }
       }
       for (const line of all.slice(Math.max(0, all.length - backlog))) write(line);
@@ -618,7 +622,7 @@ function createTailer(options) {
           detail: resolved.detail || null,
           waiting: true
         });
-        if (opts.strictPin && resolved.source !== 'auto') {
+        if (opts.strictPin && resolved.source !== 'auto' && !opts.gameWorld) {
           status('pin-unresolved', { reason: resolved.kind, sessionId: resolved.pinned || null });
           // deps.exit is what the offline self-test injects; the real CLI falls back to the
           // process exit that start_harness.ps1 already expects (exit code 3 = pin unresolved).
@@ -709,7 +713,9 @@ function createTailer(options) {
     const counted = appendEvents(res.events, (line) => {
       let seq = 0;
       try {
-        seq = JSON.parse(line).seq || 0;
+        const event = JSON.parse(line);
+        seq = event.seq || 0;
+        line = JSON.stringify({ ...event, sessionId: picked.sessionId });
       } catch (e) { }
       if (seq) lastSeq = seq;
       write(line);

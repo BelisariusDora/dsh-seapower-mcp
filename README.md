@@ -8,7 +8,7 @@
 
 **Connect Sea Power's battlefield state and command controls to MCP.** An in-game bridge plugin and a Python adapter let MCP clients inspect units, formations, weapons, and flight decks, then issue navigation, aviation, and engagement orders.
 
-[下载 / Download Alpha 0.1.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v0.1.0-alpha) · [桥接文档 / Bridge docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
+[下载 / Download Alpha 0.2.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v0.2.0-alpha) · [桥接文档 / Bridge docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
 
 ## 当前 AI 能力 / What AI can do today
 
@@ -28,8 +28,8 @@
 
 1. 安装 [AnchorChain Preloader 和 Workshop 模组](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html)。<br>
    Install the [AnchorChain Preloader and Workshop mod](https://seapower-modders.github.io/AnchorChain/install-anchor-chain.html).
-2. 关闭游戏，解压 Alpha ZIP，将 `dsh-spmcp` 放入 `Sea Power_Data/StreamingAssets`。详细步骤见包内 `INSTALL.md`。<br>
-   Close the game, extract the Alpha ZIP, and place `dsh-spmcp` in `Sea Power_Data/StreamingAssets`. See `INSTALL.md` in the ZIP for details.
+2. 关闭游戏，解压 Alpha ZIP，将 `dsh-spmcp` 放入 `Sea Power_Data/StreamingAssets`。详细步骤见包内 `README.md`。<br>
+   Close the game, extract the Alpha ZIP, and place `dsh-spmcp` in `Sea Power_Data/StreamingAssets`. See `README.md` in the ZIP for details.
 3. 启动游戏并载入场景。在支持本地 stdio MCP 的 AI 客户端里添加服务，让客户端启动 Python 脚本。<br>
    Start the game and load a scenario. Add the server to an AI client that supports local MCP over stdio so the client can launch the Python script.
 

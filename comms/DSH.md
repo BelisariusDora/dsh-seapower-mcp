@@ -1,19 +1,12 @@
 # DeepSeek Harness 接入
 
-需要 Node.js 24+、已启动的本地 DeepSeek Harness 和当前 Windows 用户的 DSH 配置。默认连接 127.0.0.1:19387。不同端口用 --port 指定；DSH 配置目录不同则设置 DSH_HOME。发送器使用本机 DSH 凭据。
+需要 Node.js 24+ 和已启动的本地 DSH，默认地址为 127.0.0.1:19387。发送器使用本机用户的 DSH 配置。必要时用 --port、--bridge-port 或 DSH_HOME 指定实际配置。
 
-在本 README 所在的 DSH 目录打开 PowerShell。先只读检查连接：
+在模组的 harness/DSH 目录打开两个 PowerShell 窗口，分别运行：
 
-    node .\harness_link.js --out ..\..\comms --probe
+    node .\harness_link.js --out ..\..\comms --cwd "<DSH_WORKSPACE>" --game-world
+    node .\dsh_tailer.js --out ..\..\comms\run --game-world
 
-首次安装时，开一个终端运行发送器。把工作区替换成你的 DSH 工作区：
+将 <DSH_WORKSPACE> 替换为 DSH 工作区绝对路径。进入对局后选择 Target: DSH。每局新建聊天，切局会请求停止旧游戏聊天。首条玩家消息附带 prompts/onceopen.md，面板显示原始玩家消息。
 
-    node .\harness_link.js --out ..\..\comms --new --cwd "D:\MyWorkspace"
-
-游戏里把 Target 选为 DSH。第一条游戏消息会创建 DSH 会话并写入 comms/run/session.pointer。之后重启发送器时省略 --new，复用这个会话。已有由发送器管理的指针时可以直接用复用模式。
-
-第一条消息写出指针后，在另一个终端运行回复读取器：
-
-    node .\dsh_tailer.js --out ..\..\comms\run --strict-pin
-
-发送器读取 comms/outbox.jsonl。回复读取器按 session.pointer 跟随 DSH 会话，将可见回复写入游戏读取的 comms/run/live.jsonl。发送故障先看 comms/run/link.log 和 link.status.json。同一个 outbox 只运行一个发送器，同一个 run 目录只运行一个回复读取器。
+用 --probe 做只读连接诊断。故障时查看 comms/run/link.log 和 link.status.json。同一出站队列和回传目录各运行一个进程。

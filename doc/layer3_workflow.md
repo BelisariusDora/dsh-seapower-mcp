@@ -17,7 +17,7 @@
 | DSH | `comms/outbox.jsonl` → `harness_link.js` → 绑定的 DSH 会话 | `dsh_tailer.js` 将可见记录写到 `comms/run/live.jsonl`，游戏读取并展示。 | 玩家已实测收发。 |
 | Codex (WIP) | `comms/codex.outbox.jsonl` → `codex_link.js` → Windows UI Automation → 指定桌面聊天 | Codex 桌面聊天。 | 独立入队已实测，实际桌面投递尚未通过。 |
 
-队列路径均相对于模组根目录。DSH 收发两端使用 `comms/run/session.pointer` 固定会话。Codex 通过 `comms/codex.target.json` 或 `--thread` 与 `--chat-title` 指定聊天，消费游标绑定线程。测试桌面投递时可先用 `--check` 检查当前前台聊天的控件，再用 `--outbox` 指向临时队列。
+队列路径均相对于模组根目录。DSH 以 `--game-world` 启动时每局新建会话，切局请求停止旧游戏会话。首条消息附上 `prompts/onceopen.md`，游戏界面显示玩家原文。Codex 通过 `comms/codex.target.json` 或 `--thread` 与 `--chat-title` 指定聊天，消费游标绑定线程。测试桌面投递时可先用 `--check` 检查当前前台聊天的控件，再用 `--outbox` 指向临时队列。
 
 DSH 的 `STOP` 位于 `SEND` 旁边，生成或工具执行期间可用。游戏写入 `comms/run/dsh.stop.json`，新版转发器消费请求，检查 5 秒时效与当前绑定的会话，再调用 `session/cancel`。面板提示已请求，DSH 接受情况看 `comms/run/link.log`。已运行的转发器需要重启才能加载新版脚本。有效、过期、会话不匹配和防重放已用模拟 RPC 验证，游戏内实际中止待验证。
 

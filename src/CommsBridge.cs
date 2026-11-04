@@ -95,6 +95,31 @@ namespace SeaPowerAgentBridge
         private static long _lines;
         private static long _dropped;
         private static string _sessionId = "";
+        private static readonly string GameInstance = Guid.NewGuid().ToString("N");
+        private static string _displayWorld;
+        private static bool _perWorld;
+        private static string _worldSession;
+
+        private static string WorldKey()
+        {
+            string state = SessionRegistry.BoundaryState;
+            if (state != SessionRegistry.StateWatching && state != SessionRegistry.StateVerified) return null;
+            return GameInstance + ":" + SessionRegistry.WorldGeneration.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static void RefreshWorldLocked()
+        {
+            if (!_perWorld) return;
+            string world = WorldKey();
+            if (_displayWorld == world) return;
+            _displayWorld = world;
+            _items.Clear();
+            _out.Clear();
+            _sessionId = "";
+            _worldSession = null;
+            _link = "no-session";
+            _tailerNote = "waiting for this mission's DSH session";
+        }
         private static string _sessionSlug = "";
         private static string _link = "unknown";     // unknown | attached | no-session | down
         private static string _tailerNote = "";
@@ -329,6 +354,20 @@ namespace SeaPowerAgentBridge
             }
             if (string.IsNullOrEmpty(live)) return;
 
+            try
+            {
+                string pointer = Path.Combine(Path.GetDirectoryName(live), "session.pointer");
+                JObject pin = JObject.Parse(ReadShared(pointer));
+                lock (_lock)
+                {
+                    _perWorld = (string)pin["source"] == "game-world";
+                    RefreshWorldLocked();
+                    _worldSession = _perWorld && _displayWorld != null && (string)pin["world"] == _displayWorld
+                        ? (string)pin["sessionId"] : null;
+                }
+            }
+            catch (Exception) { }
+
             // The tailer's own state file names the session it follows. Read before the log
             // so a freshly attached session is labelled in the same pass.
             try
@@ -343,7 +382,7 @@ namespace SeaPowerAgentBridge
                         string slug = (string)o["workspaceSlug"];
                         lock (_lock)
                         {
-                            if (!string.IsNullOrEmpty(sid)) _sessionId = sid;
+                            if (!_perWorld && !string.IsNullOrEmpty(sid)) _sessionId = sid;
                             if (!string.IsNullOrEmpty(slug)) _sessionSlug = slug;
                         }
                     }
@@ -463,6 +502,12 @@ namespace SeaPowerAgentBridge
 
             string k = (string)o["k"];
             if (string.IsNullOrEmpty(k)) return;
+            lock (_lock)
+            {
+                RefreshWorldLocked();
+                if (_perWorld && (string.IsNullOrEmpty(_worldSession) ||
+                    (string)o["sessionId"] != _worldSession)) return;
+            }
 
             if (k == "tailer")
             {
@@ -652,7 +697,11 @@ namespace SeaPowerAgentBridge
         /// the reader is mid-append.</summary>
         internal static List<CommsItem> Snapshot()
         {
-            lock (_lock) { return new List<CommsItem>(_items); }
+            lock (_lock)
+            {
+                RefreshWorldLocked();
+                return new List<CommsItem>(_items);
+            }
         }
 
         internal static List<CommsOutgoing> Outgoing()
@@ -683,8 +732,13 @@ namespace SeaPowerAgentBridge
             msg.Target = target;
 
             string path;
+            string world;
             lock (_lock)
             {
+                RefreshWorldLocked();
+                world = WorldKey();
+                if (_perWorld && target == "dsh" && world == null)
+                    throw new ApiException(409, "no_mission", "Wait for the mission to load", true);
                 msg.Id = _outSeq++;
                 _out.Add(msg);
                 while (_out.Count > 200) _out.RemoveAt(0);
@@ -732,6 +786,7 @@ namespace SeaPowerAgentBridge
                     line["at"] = msg.At;
                     line["text"] = text;
                     line["from"] = "player";
+                    if (target == "dsh" && world != null) line["world"] = world;
                     using (FileStream fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                     {
                         byte[] bytes = Encoding.UTF8.GetBytes(line.ToString(Newtonsoft.Json.Formatting.None) + "\n");
@@ -814,6 +869,8 @@ namespace SeaPowerAgentBridge
             JObject o = new JObject();
             lock (_lock)
             {
+                RefreshWorldLocked();
+                o["worldKey"] = WorldKey();
                 o["link"] = _link;
                 if (_tailerNote.Length > 0) o["linkNote"] = _tailerNote;
                 o["sessionId"] = _sessionId;
