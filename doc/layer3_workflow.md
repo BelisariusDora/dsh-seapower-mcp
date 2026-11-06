@@ -1,36 +1,58 @@
-# 第三层 · 玩家交互与工单运行时
+# 第三层 · Harness 调度层
 
-第三层连接玩家、Agent 会话和游戏状态。当前已实现游戏内通信和 DSH 接入，Codex 桌面转发标为 WIP。工单运行时仍处于设计阶段，第一层 Watch 与第二层游标读取已可作为接入基础。
+[文档索引](README.md) · [第二层：转译](layer2_translation.md) · [第四层：人机交互](layer4_interaction.md)
 
-| 层 | 职责 |
+第三层负责 Agent 会话和任务执行生命周期：接收玩家意图、绑定当前对局、创建工单、选择执行者、限制业务调用、保存证据、判定结果和投递异常通知。界面布局、按钮和玩家设置操作归第四层。本页替代原“玩家交互与工单运行时”的混合描述。
+
+## 模块与边界
+
+| 模块 | 当前职责 |
 |---|---|
-| [第一层 · 游戏桥接](README.md) | 在游戏进程内读取状态、提交命令、登记和求值 Watch。 |
-| [第二层 · MCP 转译](layer2_translation.md) | 将 MCP 工具调用转为 Bridge 请求，提供结构化回执和 Watch 事件读取。 |
-| 第三层 · 玩家交互与工单运行时 | 按目标路由通信。规划中的工单运行时负责持续消费事件、关联证据、推进状态并通知玩家。 |
+| comms/harness_link.js、comms/dsh_tailer.js | DSH 每局新建并绑定主会话；发送玩家输入、读取可见回复及处理 STOP |
+| comms/codex_chat.py | Codex 每局 ephemeral app-server 主会话；原生动态工具、同轮绑定、STOP 和迟到输出抑制 |
+| ticket_scheduler.py | 独立 Python 单写者调度器；消费文件请求、派发/取消、截止、真值采样、快照与通知 |
+| ticket_store.py、ticket_predicates.py | 追加持久账本、请求去重、资源冲突、状态和确定性判据 |
+| ticket_executor.py、ticket_executor_dsh.py、ticket_executor_codex.py | 共享执行契约及 DSH/Codex Worker Adapter |
+| comms/dsh_ticket_plugin.mjs | DSH 原生工具、独立 one-shot Worker 持有者和主模式轮次限制 |
+| api_catalog.py、api_tools.json | 从既有 MCP registry 提供接口发现、准确 schema 与使用注意事项 |
+| ticket_api.py、ticket_main.py | 工单范围内调用现有第二层 handler；主模式宿主绑定来源，私有凭证不交给主模型 |
+| ticket_presentation.py | 将宿主账本和结果生成只读视图，供第四层显示 |
+| ticket_notifications.py、comms/dsh_ticket_notifications.mjs | 问题事件、原会话投递、去重、仅回复权限和生命周期 |
 
-## 游戏内通信
+这些模块在物理部署中分布于 modules/tickets、modules/api、harness/DSH 和 harness/Codex；目录名称不等于独立架构层。第一层 src/TicketBridge.cs 只承接 /tickets 文件协议，不代替 Python 调度器。业务调用复用第二层实现；调度器可直接 GET 第一层真值，避免让 LLM 轮询等待。
 
-在战术界面用 `N` 打开或切换控制台，选择 `HARNESS COMMS`。底部 `Target` 控制发送目标和显示的会话记录。`Portrait: Auto` 在 DSH 下使用 `deepseek`，在 Codex 下使用 `gpt`。手选头像会保留到再次修改。面板里的 `queued` 表示已写入本地队列，送达需要对应转发器继续处理。
+## 主会话与通信
 
-| 目标 | 出站路径 | 回复位置 | 验证状态 |
-|---|---|---|---|
-| DSH | `comms/outbox.jsonl` → `harness_link.js` → 绑定的 DSH 会话 | `dsh_tailer.js` 将可见记录写到 `comms/run/live.jsonl`，游戏读取并展示。 | 玩家已实测收发。 |
-| Codex (WIP) | `comms/codex.outbox.jsonl` → `codex_link.js` → Windows UI Automation → 指定桌面聊天 | Codex 桌面聊天。 | 独立入队已实测，实际桌面投递尚未通过。 |
+- DSH 通过 --game-world 每局新开游戏会话，首句隐藏注入 onceopen，每次输入重读 persona。sender 的 --out 是 <MOD_ROOT>/comms；tailer 的 --out 是 <MOD_ROOT>/comms/run，读取该目录 session.pointer 并写入 live.jsonl。
+- Codex 在本局首条输入时新建临时 thread，同局复用，切局中断并关闭；不跟随桌面前台聊天、不恢复旧局聊天。输出 codex.chat.json 供游戏显示。
+- 模型看到的隐藏上下文和玩家面板中的原文分开处理。STOP 校验会话、对局以及可用的轮次/时效；已提交的游戏命令不能靠停止生成撤销。
+- 安装与启动见 [DSH](../comms/DSH.md)、[Codex](../comms/CODEX_DEPLOY.md) 和 [部署指南](DEPLOY.md)。不假设 Codex 原生子代理天然能脱离主会话后台运行；后台执行由当前 Adapter 和独立进程明确持有。
 
-队列路径均相对于模组根目录。DSH 以 `--game-world` 启动时每局新建会话，切局请求停止旧游戏会话。首条消息附上 `prompts/onceopen.md`，游戏界面显示玩家原文。Codex 通过 `comms/codex.target.json` 或 `--thread` 与 `--chat-title` 指定聊天，消费游标绑定线程。测试桌面投递时可先用 `--check` 检查当前前台聊天的控件，再用 `--outbox` 指向临时队列。
+## 两种执行方式
 
-DSH 的 `STOP` 位于 `SEND` 旁边，生成或工具执行期间可用。游戏写入 `comms/run/dsh.stop.json`，新版转发器消费请求，检查 5 秒时效与当前绑定的会话，再调用 `session/cancel`。面板提示已请求，DSH 接受情况看 `comms/run/link.log`。已运行的转发器需要重启才能加载新版脚本。有效、过期、会话不匹配和防重放已用模拟 RPC 验证，游戏内实际中止待验证。
+| 模式 | 主 Agent | 执行者与调度器 |
+|---|---|---|
+| Worker（默认） | 判断授权边界、建单、简短确认并结束当前轮次 | 调度器经对应 Adapter 持有独立 Worker；主轮次结束后继续执行 |
+| 仅主 Agent | 判断边界并建单，按回执 main 在同轮调用 sp_main_api_call/finish，报告后结束 | 不创建 Worker；调度器仍保存状态、处理截止和已有真值判据 |
 
-安装包内的运行命令见 `harness/DSH/README.md` 与 `harness/Codex/README.md`。仓库对应说明见 [DSH](../comms/DSH.md) 和 [Codex](../comms/CODEX_DEPLOY.md)。
+执行方式在建单时固定，切换设置只影响新工单。重复 requestId 返回原结果，不能改变已受理任务的执行者。main 来源绑定 harness、sessionId、worldKey、turnId；其他轮次或会话不能接管执行。更多约束与实测见 [仅主 Agent 模式](main_agent_mode.md)。
 
-## 工单运行时设计
+## 受控调用和结果
 
-工单用于跨回合跟踪玩家交办的事项。Agent 提出事项及可观察条件，第一层在游戏主线程持续求值，工单运行时负责在两次 Agent 回合之间推进状态。第一版可覆盖「登记观察 → 命中或到期 → 通知玩家」这一条流程。
+执行者使用 sp_api_find/schema 查询实际签名。Worker 使用 sp_api_call/finish，主模式使用 sp_main_api_call/finish；两者进入同一账本和既有 MCP handler，不查源码、不复制底层接口。宿主检查资源范围、调用预算、HOLD、世界代际和活动状态。结果不明的写入禁止自动重发。
 
-1. **登记**。记录工单 ID、玩家意图、截止时间和观察条件。通过 `sp_watch_create` 保存 `watch_id`、`world_generation` 及初始 `event_cursor`，覆盖登记时的即时命中。
-2. **读回**。通过 `sp_watch_events` 从已保存游标继续读取。按规则和世界代际关联事件，以 `event_key` 去重。仅将 `evidence=true` 的事件用于确认条件命中。
-3. **推进**。建议先支持观察中、已命中、已到期、已取消和待重新核对。命中时保留关联证据，到期时通知玩家并询问后续处理。工单结束时撤销仍存活的观察规则。
-4. **恢复**。状态、已处理事件和游标应一同持久化，重启后从已提交的游标继续。遇到 `outbox_reset`、世界代际变化或 Watch 丢失时，先重新核对活动规则，再决定是否重建。新的世界需要重新解析单位 ID。
-5. **通知与权限**。工单通知包含工单 ID、状态及可核查证据。后续战术动作沿用玩家授权和 MCP 命令回执。通知接入方式、工单存储格式和正式 Agent 的工具面仍待设计。
+工单调用状态与任务结果分开：executed / execution_only / resultVerified=false 表示 API 有执行记录，不能自动推出起飞、命中或摧毁。fulfilled/partial 是执行者声明，blocked/needs_input 必须附具体原因。单舰 set_speed 继续 injected → monitoring，连续两次新鲜速度样本达标后 completed。Watch 工具调用和历史事件可记录为证据，通用 Watch 事件驱动自动结单尚未实现。
 
-MVP 验收包括即时命中、延后命中、到期、重启后继续消费，以及换图后旧证据隔离。DSH 或 Codex 聊天记录只用于交互与通知，工单状态以运行时保存的状态和 Bridge 事件为准。
+DESTROY 隐藏任务、拒绝后续接口并停止对应执行者。Worker 模式不能在原生子任务尚未退出时提前释放执行槽；main 模式结束未收尾则保留 uncertain，STOP 时按现有调用证据取消或记为 uncertain，不自动转派。工单落盘用于恢复和防重发，不代表跨存档恢复主聊天。
+
+## 异常通知与第四层的交接
+
+Worker 的 blocked、needs_input、failed、uncertain、timed_out 可生成一次问题事件，绑定原主会话；主会话忙时排队，玩家输入优先。通知只允许文字说明或澄清，宿主拒绝全部工具，不因问题通知追加操作。main 已结构化报告的问题不再重复唤醒原主会话。详见 [异常通知闭环](ticket_notifications.md)。
+
+第三层向第四层提供任务快照、已提交命令、未确认写入、读取记录、Watch 边界和通知结果。第四层只渲染证据及提交用户控制意图，不自行判定 completed。persona 约束表达，不授予新的游戏操作权限。
+
+## 当前验证
+
+2026-11-06 两端主模式实机只读任务、游戏 STOP、经原工单协议的销毁通过；关闭开关后 DSH Worker 和异常通知闭环回归通过。战术写入、切局、超时和真值判据各自的历史/隔离/实机范围分别记录在专题文档，不把文档或离线通过当成全量实机完成。
+
+[工单运行时与 TR 历史](ticket_runtime_plan.md) 保留逐阶段调查记录；与其早期 TR1 单后端描述冲突时，以本页和对应当前专题为准。

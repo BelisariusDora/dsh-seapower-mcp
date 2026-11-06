@@ -8,7 +8,7 @@
 
 **Connect Sea Power's battlefield state and command controls to MCP.** An in-game bridge plugin and a Python adapter let MCP clients inspect units, formations, weapons, and flight decks, then issue navigation, aviation, and engagement orders.
 
-[下载 / Download Alpha 0.2.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v0.2.0-alpha) · [桥接文档 / Bridge docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
+[下载 / Download Alpha 1.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v1.0.0-alpha) · [桥接文档 / Bridge docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
 
 ## 当前 AI 能力 / What AI can do today
 

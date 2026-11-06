@@ -1,0 +1,22 @@
+{
+  "runtime_layout.py": "modules/runtime_layout.py",
+  "mcp_server.py": "modules/mcp/mcp_server.py",
+  "compact_replies.py": "modules/mcp/compact_replies.py",
+  "track_briefs.py": "modules/mcp/track_briefs.py",
+  "track_motion.py": "modules/mcp/track_motion.py",
+  "track_mlp_weights.json": "modules/mcp/track_mlp_weights.json",
+  "watch_events.py": "modules/mcp/watch_events.py",
+  "ticket_scheduler.py": "modules/tickets/ticket_scheduler.py",
+  "ticket_store.py": "modules/tickets/ticket_store.py",
+  "ticket_predicates.py": "modules/tickets/ticket_predicates.py",
+  "ticket_executor.py": "modules/tickets/ticket_executor.py",
+  "ticket_executor_dsh.py": "harness/DSH/ticket_executor_dsh.py",
+  "ticket_executor_codex.py": "harness/Codex/ticket_executor_codex.py",
+  "api_catalog.py": "modules/api/api_catalog.py",
+  "ticket_api.py": "modules/api/ticket_api.py",
+  "api_tools.json": "modules/api/api_tools.json",
+  "comms/codex_chat.py": "harness/Codex/codex_chat.py",
+  "ticket_presentation.py": "modules/tickets/ticket_presentation.py",
+  "ticket_notifications.py": "modules/tickets/ticket_notifications.py",
+  "ticket_main.py": "modules/tickets/ticket_main.py"
+}

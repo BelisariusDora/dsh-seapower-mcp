@@ -120,6 +120,56 @@ namespace SeaPowerAgentBridge
             Define(BuiltinZh, "comms.linkNoSession", "\u65e0\u4f1a\u8bdd");
             Define(BuiltinZh, "comms.running", "\u6267\u884c\u4e2d {0}");
             Define(BuiltinZh, "comms.scroll", "\u6eda\u52a8 {0}/{1}");
+
+            // Settings page and its shell tab.
+            Define(BuiltinEn, "console.inspector", "AGENT INSPECTOR");
+            Define(BuiltinZh, "console.inspector", "决策记录");
+            Define(BuiltinEn, "console.comms", "HARNESS COMMS");
+            Define(BuiltinZh, "console.comms", "顾问通联");
+            Define(BuiltinEn, "console.settings", "SETTINGS");
+            Define(BuiltinZh, "console.settings", "设置");
+            Define(BuiltinEn, "settings.title", "Player settings");
+            Define(BuiltinZh, "settings.title", "玩家设置");
+            Define(BuiltinEn, "settings.language", "Interface language");
+            Define(BuiltinZh, "settings.language", "界面语言");
+            Define(BuiltinEn, "settings.auto", "Follow game");
+            Define(BuiltinZh, "settings.auto", "跟随游戏");
+            Define(BuiltinEn, "settings.language.note", "Click to cycle: game / English / Chinese. Apply after saving.");
+            Define(BuiltinZh, "settings.language.note", "点击切换：跟随游戏 / English / 简体中文。保存后应用。");
+            Define(BuiltinEn, "settings.compact", "Compact MCP replies");
+            Define(BuiltinZh, "settings.compact", "精简 MCP 回复");
+            Define(BuiltinEn, "settings.compact.note", "Reduce fields in large state replies. Takes effect on the next query.");
+            Define(BuiltinZh, "settings.compact.note", "减少大型态势回复的字段，从下次查询生效。");
+            Define(BuiltinEn, "settings.mainOnly", "Use main agent only");
+            Define(BuiltinZh, "settings.mainOnly", "仅使用主 Agent 操作");
+            Define(BuiltinEn, "settings.mainOnly.note", "New tickets run in the main turn, without workers. May improve results but require more thinking time. Off by default.");
+            Define(BuiltinZh, "settings.mainOnly.note", "新任务仍建单，由主 Agent 执行全部交互。或许效果更好，但思考耗时更长。默认关闭。");
+            Define(BuiltinEn, "settings.shots", "Save screenshots at original resolution");
+            Define(BuiltinZh, "settings.shots", "截图保存原始分辨率");
+            Define(BuiltinEn, "settings.shots.note", "Save full-size images locally; images sent to the advisor stay small.");
+            Define(BuiltinZh, "settings.shots.note", "本地截图保留原始分辨率；传给顾问的图像仍使用缩小版本。");
+            Define(BuiltinEn, "settings.save", "Save");
+            Define(BuiltinZh, "settings.save", "保存");
+            Define(BuiltinEn, "settings.reload", "Discard / reload");
+            Define(BuiltinZh, "settings.reload", "放弃修改 / 重新读取");
+            Define(BuiltinEn, "settings.ready", "Preferences persist between missions. Changes require Save.");
+            Define(BuiltinZh, "settings.ready", "设置跨对局保留，修改后需要点击保存。");
+            Define(BuiltinEn, "settings.unsaved", "Unsaved changes");
+            Define(BuiltinZh, "settings.unsaved", "修改尚未保存");
+            Define(BuiltinEn, "settings.saved", "Saved. Applies immediately or on the next query / capture.");
+            Define(BuiltinZh, "settings.saved", "已保存，立即或在下次查询 / 截图时生效。");
+            Define(BuiltinEn, "settings.loadFailed", "Could not read settings; reload to try again.");
+            Define(BuiltinZh, "settings.loadFailed", "无法读取设置，请重新读取后再试。");
+            Define(BuiltinEn, "settings.saveFailed", "Could not apply settings. Your changes remain on this page.");
+            Define(BuiltinZh, "settings.saveFailed", "设置应用失败，修改仍保留在本页。");
+            Define(BuiltinEn, "settings.menuKey", "Menu open / close key");
+            Define(BuiltinZh, "settings.menuKey", "菜单打开 / 关闭键");
+            Define(BuiltinEn, "settings.pressKey", "Press a key…");
+            Define(BuiltinZh, "settings.pressKey", "请按下新键…");
+            Define(BuiltinEn, "settings.capture", "Press a letter, number or F1–F12. Escape cancels.");
+            Define(BuiltinZh, "settings.capture", "请按字母、数字或 F1–F12；Esc 取消录制。");
+            Define(BuiltinEn, "settings.menuKey.note", "Click to bind a single letter, number or F1–F12. Save to apply. Choose a key unused by game shortcuts.");
+            Define(BuiltinZh, "settings.menuKey.note", "点击录制单个字母、数字或 F1–F12，保存后生效。请选择未被游戏快捷键占用的按键。");
         }
 
         private static void Define(Dictionary<string, string> table, string key, string value)

@@ -960,6 +960,15 @@ function createLink(options) {
         }
         onceopenLoaded = true;
       }
+      // Style is read for every player turn, so editing the deployed persona
+      // affects an existing game chat without replacing the Harness identity.
+      let persona = '执行方式以建单回执 executionMode 为准：worker 确认后结束；main 本轮使用 sp_main_api_call/finish 完成接口交互后报告。不派子代理，不轮询。';
+      try {
+        const file = cfg.personaFile || path.join(path.dirname(path.dirname(cfg.outbox)), 'persona.md');
+        persona += '\n'+io.readText(file).trim();
+      } catch (e) {
+        if (e.code !== 'ENOENT') log('cannot load persona.md: ' + e.message);
+      }
       if (!initializedSessions.has(cfg.sessionId)) {
         let context;
         try {
@@ -969,8 +978,11 @@ function createLink(options) {
           log("cannot load prompts/onceopen.md: " + e.message);
           return cb(e);
         }
+        if (persona) context += '\n\n' + persona;
         text = "<seapower-onceopen>\n" + context + "\n</seapower-onceopen>\n\n" + text;
         onceopen = true;
+      } else if (persona) {
+        text = '<seapower-persona>\n' + persona + '\n</seapower-persona>\n\n' + text;
       }
     }
     const requestId = requestIdForKey(key);

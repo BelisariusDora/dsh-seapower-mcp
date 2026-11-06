@@ -25,6 +25,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from urllib.parse import quote
+from pathlib import Path
+
+
+# Both modular deployments and the flat source checkout use the same imports.
+_layout = Path(__file__).resolve().parents[1]
+if _layout.name == 'modules':
+    sys.path.insert(0, str(_layout))
+from runtime_layout import activate
+activate()
 
 import compact_replies
 import watch_events
@@ -365,7 +374,7 @@ def t_comms_page(args):
 
 
 def t_comms_send(args):
-    return call("POST", "/comms/send", {"text": args["text"]})
+    return call("POST", "/comms/send", {"text": args["text"], "target": args.get("target", "dsh")})
 
 
 def t_comms_window(args):
@@ -1278,7 +1287,98 @@ WATCH_ID_SCHEMA = {
 }
 
 
+def t_ticket_create(args):
+    body = dict(args)
+    body["op"] = "create"
+    return call("POST", "/tickets", body)
+
+
+def t_ticket_report(args):
+    body = dict(args)
+    body["op"] = "report"
+    return call("POST", "/tickets", body)
+
+
+def t_ticket_destroy(args):
+    body = dict(args)
+    body["op"] = "destroy"
+    return call("POST", "/tickets", body)
+
+
+def t_ticket_list(args):
+    return call("GET", "/tickets", None)
+
 TOOLS = [
+    {
+        "name": "sp_ticket_create",
+        "description": "Persist a Sea Power ticket before dispatch. TR1 requires matching set_speed command and speed_reached predicate. End the main turn after acceptance. Worker reports injection; only scheduler observations complete the ticket. Retry uncertainty with the SAME requestId.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "requestId": {"type": "string", "format": "uuid"},
+                "title": {"type": "string", "maxLength": 120},
+                "task": {"type": "string", "maxLength": 12000},
+                "completion": {"type": "string", "maxLength": 4000},
+                "command": {
+                    "type": "object",
+                    "properties": {"kind": {"type": "string", "enum": ["set_speed"]},
+                                   "unit_id": {"type": "integer", "minimum": 1},
+                                   "knots": {"type": "number", "minimum": 0, "maximum": 80}},
+                    "required": ["kind", "unit_id", "knots"], "additionalProperties": False,
+                },
+                "predicate": {
+                    "type": "object",
+                    "properties": {"kind": {"type": "string", "enum": ["speed_reached"]},
+                                   "unit_id": {"type": "integer", "minimum": 1},
+                                   "target_knots": {"type": "number"},
+                                   "tolerance_knots": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}},
+                    "required": ["kind", "unit_id", "target_knots"], "additionalProperties": False,
+                },
+                "executor": {"type": "string", "enum": ["dsh", "codex"], "description": "Optional execution backend; omitted uses scheduler default."},
+                "timeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 3600},
+            },
+            "required": ["requestId", "title", "task", "completion"],
+            "additionalProperties": False,
+        },
+        "handler": t_ticket_create,
+    },
+    {
+        "name": "sp_ticket_report",
+        "description": "Worker injection report. Use your ticket id and private reportToken. Report injected with the full raw Bridge receipt then exit. Report uncertain for a lost write receipt and never retry the write. completed is a legacy alias for injected, never game completion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "requestId": {"type": "string", "format": "uuid"},
+                "id": {"type": "string"},
+                "reportToken": {"type": "string"},
+                "receipt": {"type": "object", "description": "Raw Bridge envelope, including ok/cmd/data and uncertainty flags."},
+                "status": {"type": "string", "enum": ["running", "injected", "completed", "failed", "uncertain", "executed", "blocked", "needs_input"]},
+                "taskOutcome": {"type": "string", "enum": ["fulfilled", "partial", "blocked", "needs_input", "unreported"]},
+                "outcomeReason": {"type": "string", "maxLength": 2000},
+                "detail": {"type": "string", "maxLength": 4000},
+            },
+            "required": ["requestId", "id", "reportToken", "status", "detail"],
+            "additionalProperties": False,
+        },
+        "handler": t_ticket_report,
+    },
+    {
+        "name": "sp_ticket_list",
+        "description": "Read current mission ticket status. Workers may check whether their assigned ticket remains visible and active.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": t_ticket_list,
+    },
+    {
+        "name": "sp_ticket_destroy",
+        "description": "Hide the ticket and cancel its native worker. Already submitted game orders remain in the game.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"requestId": {"type": "string", "format": "uuid"}, "id": {"type": "string"}},
+            "required": ["requestId", "id"],
+            "additionalProperties": False,
+        },
+        "handler": t_ticket_destroy,
+    },
     {
         "name": "sp_watch_create",
         "description": "Register a temporary condition on a raw game unit field. Returns the watch ID and initial probe. Poll sp_watch_events using the returned event_cursor to catch even immediate hits.",
@@ -2597,6 +2697,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "The message. Over 4000 characters is truncated and flagged."},
+                "target": {"type": "string", "enum": ["dsh", "codex"], "default": "dsh"},
             },
             "required": ["text"],
         },
@@ -2623,7 +2724,30 @@ TOOLS = [
     },
 ]
 
+from api_catalog import helper_specs
+import ticket_api
+TOOLS.extend({**spec, "handler": (lambda args, name=spec['name']: ticket_api.execute(name,args))} for spec in helper_specs())
+# Ticket scopes are validated by the authority; preserve the existing speed shape.
+TOOLS[0]['inputSchema']['properties']['command'] = {
+    'type':'object','properties':{
+        'kind':{'type':'string','enum':['set_speed','mcp_task']},
+        'unit_id':{'type':'integer','minimum':1},'knots':{'type':'number','minimum':0,'maximum':80},
+        'tools':{'type':'array','items':{'type':'string'}},'resources':{'type':'array','items':{'type':'string'}},
+        'max_calls':{'type':'integer','minimum':1,'maximum':64}},'required':['kind'],'additionalProperties':False}
+TOOLS[0]['inputSchema']['properties']['predicate']['properties']['kind']['enum'].append('execution_recorded')
+TOOLS[0]['inputSchema']['properties']['predicate']['required'] = ['kind']
+TOOLS[0]['description'] = 'Main Agent: persist a speed or mcp_task ticket, confirm acceptance and END YOUR TURN. mcp_task uses existing business APIs through four compact helpers; executed is not independently verified game completion.'
+TOOLS[1]['inputSchema']['properties']['status']['enum'].append('executed')
+for item in TOOLS:
+    if item['name'] == 'sp_launch_aircraft':
+        item['inputSchema']['required'] = ['unit_id','loadout']
+        item['inputSchema']['properties']['loadout']['description'] = 'Required explicit loadout from sp_deck; the Bridge rejects an omitted loadout.'
+
+import ticket_main
+TOOLS.extend({**spec, 'handler': (lambda args, name=spec['name']: ticket_main.execute(name,args))}
+             for spec in ticket_main.helper_specs())
 TOOLS_BY_NAME = dict((t["name"], t) for t in TOOLS)
+
 
 
 # ------------------------------------------------------------------- jsonrpc
@@ -2645,7 +2769,7 @@ def reply_error(req_id, code, message):
 def handle_tools_call(params):
     name = params.get("name")
     args = params.get("arguments") or {}
-    tool = TOOLS_BY_NAME.get(name)
+    tool = {'handler':ticket_main.end_turn} if name=='_sp_main_turn_end' else TOOLS_BY_NAME.get(name)
     if tool is None:
         return {
             "content": [{"type": "text", "text": "unknown tool: %s" % name}],
@@ -2658,6 +2782,11 @@ def handle_tools_call(params):
     except Exception as e:  # noqa: BLE001
         return {"content": [{"type": "text", "text": "tool failed: %r" % e}], "isError": True}
 
+    return present_tool_result(name, result)
+
+
+def present_tool_result(name, result):
+    """Share the existing projection/motion/media formatting with ticket workers."""
     if name in compact_replies.TOOLS and compact_replies.enabled():
         if name == "sp_tracks":
             result = TRACK_MOTION.annotate(result)
@@ -2728,6 +2857,10 @@ def handle(msg):
 
 
 def main():
+    # MCP stdio is UTF-8, including Windows pipes using a legacy locale.
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     log("starting, bridge at 127.0.0.1:%d" % PORT)
     for line in sys.stdin:
         line = line.strip()

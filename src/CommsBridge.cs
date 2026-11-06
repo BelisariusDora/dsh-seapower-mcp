@@ -99,6 +99,108 @@ namespace SeaPowerAgentBridge
         private static string _displayWorld;
         private static bool _perWorld;
         private static string _worldSession;
+        private static double _codexReadAt;
+        private static string _codexWorld;
+        private static string _codexSession;
+        private static JObject _codexState = new JObject();
+        private static readonly Dictionary<long, CommsItem> _codexKnown = new Dictionary<long, CommsItem>();
+
+        private static void PullCodexLocked()
+        {
+            string world = WorldKey();
+            if (_codexWorld != world)
+            {
+                _codexReadAt = 0;
+                _codexWorld = world;
+                _codexSession = null;
+                _codexKnown.Clear();
+                _codexState = new JObject();
+                _items.RemoveAll(x => x.Target == "codex");
+                _out.RemoveAll(x => x.Target == "codex");
+            }
+            if (world == null || NowMs() - _codexReadAt < 100) return;
+            _codexReadAt = NowMs();
+            string run = _runDir;
+            if (string.IsNullOrEmpty(run)) run = Path.Combine(Core.ModDir(), "comms", "run");
+            string path = Path.Combine(run, "codex.chat.json");
+            try
+            {
+                JObject state;
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (fs.Length > 2097152) return;
+                    using (StreamReader reader = new StreamReader(fs, Encoding.UTF8)) state = JObject.Parse(reader.ReadToEnd());
+                }
+                if ((string)state["worldKey"] != world) return;
+                _codexState = state;
+                string session = (string)state["sessionId"];
+                if (_codexSession != session)
+                {
+                    _codexSession = session;
+                    _codexKnown.Clear();
+                    _items.RemoveAll(x => x.Target == "codex" && x.Kind != "user");
+                }
+                JArray rows = state["items"] as JArray;
+                if (rows == null) return;
+                HashSet<long> present = new HashSet<long>();
+                foreach (JObject row in rows)
+                {
+                    long id = (long)row["seq"];
+                    present.Add(id);
+                    CommsItem item;
+                    if (!_codexKnown.TryGetValue(id, out item))
+                    {
+                        long outgoing = (long?)row["outgoingId"] ?? 0;
+                        item = outgoing == 0 ? null : _items.Find(x => x.Target == "codex" && x.OutgoingId == outgoing);
+                        if (item == null)
+                        {
+                            item = new CommsItem { Seq = _seq++, Target = "codex" };
+                            _items.Add(item);
+                        }
+                        _codexKnown[id] = item;
+                        item.OutgoingId = outgoing;
+                        if (outgoing != 0)
+                        {
+                            item.Delivered = true;
+                            foreach (CommsOutgoing message in _out)
+                                if (message.Target == "codex" && message.Id == outgoing) { message.State = "taken"; message.Matched = true; }
+                        }
+                    }
+                    item.Kind = (string)row["kind"] ?? "";
+                    item.Text = (string)row["text"] ?? "";
+                    item.Phase = (string)row["phase"] ?? "";
+                    item.Tool = (string)row["tool"] ?? "";
+                    item.IsError = (bool?)row["isError"] ?? false;
+                    item.At = (double?)row["at"] ?? 0;
+                }
+                List<long> removed = new List<long>();
+                foreach (KeyValuePair<long, CommsItem> pair in _codexKnown)
+                    if (!present.Contains(pair.Key)) { _items.Remove(pair.Value); removed.Add(pair.Key); }
+                foreach (long id in removed) _codexKnown.Remove(id);
+                while (_items.Count > _maxItems) _items.RemoveAt(0);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            catch (Newtonsoft.Json.JsonException) { }
+        }
+
+        public static JObject State(string target)
+        {
+            if (target != "codex") return State();
+            lock (_lock)
+            {
+                PullCodexLocked();
+                JObject state = (JObject)_codexState.DeepClone();
+                state.Remove("items");
+                state["items"] = _items.FindAll(x => x.Target == "codex").Count;
+                state["worldKey"] = WorldKey();
+                if ((double?)state["at"] == null || NowMs() - (double)state["at"] > 15000)
+                { state["link"] = "down"; state["generation"] = "idle"; }
+                state["pendingOutbox"] = _out.FindAll(x => x.Target == "codex" && !x.Matched).Count;
+                state["hold"] = Hold;
+                return state;
+            }
+        }
 
         private static string WorldKey()
         {
@@ -113,8 +215,8 @@ namespace SeaPowerAgentBridge
             string world = WorldKey();
             if (_displayWorld == world) return;
             _displayWorld = world;
-            _items.Clear();
-            _out.Clear();
+            _items.RemoveAll(x => x.Target == "dsh");
+            _out.RemoveAll(x => x.Target == "dsh");
             _sessionId = "";
             _worldSession = null;
             _link = "no-session";
@@ -349,6 +451,7 @@ namespace SeaPowerAgentBridge
             string state;
             lock (_lock)
             {
+                PullCodexLocked();
                 live = _livePath;
                 state = _statePath;
             }
@@ -421,8 +524,8 @@ namespace SeaPowerAgentBridge
                 lock (_lock)
                 {
                     _offset = 0;
-                    _items.Clear();
-                    _out.Clear();
+                    _items.RemoveAll(x => x.Target == "dsh");
+                    _out.RemoveAll(x => x.Target == "dsh");
                     _dropped = 0;
                     _lines = 0;
                 }
@@ -443,8 +546,8 @@ namespace SeaPowerAgentBridge
                             // The helper restarted the file underneath us. Keeping the old
                             // ring would mix a dead transcript into the live page.
                             _offset = 0;
-                            _items.Clear();
-                            _out.Clear();
+                            _items.RemoveAll(x => x.Target == "dsh");
+                            _out.RemoveAll(x => x.Target == "dsh");
                             _dropped = 0;
                             _lines = 0;
                         }
@@ -519,8 +622,8 @@ namespace SeaPowerAgentBridge
                         // A re-attach means the helper started over: its file may be a fresh
                         // tail window, so anything still on the page came from a previous run
                         // and would read as "the agent just said this".
-                        _items.Clear();
-                        _out.Clear();
+                        _items.RemoveAll(x => x.Target == "dsh");
+                        _out.RemoveAll(x => x.Target == "dsh");
                         _dropped = 0;
                         _lines = 0;
                         _link = "attached";
@@ -533,8 +636,8 @@ namespace SeaPowerAgentBridge
                     {
                         // A start line means the helper opened a new file: nothing on the page
                         // came from it, so drop the old transcript instead of mixing runs.
-                        _items.Clear();
-                        _out.Clear();
+                        _items.RemoveAll(x => x.Target == "dsh");
+                        _out.RemoveAll(x => x.Target == "dsh");
                         _dropped = 0;
                         _lines = 0;
                         _link = "unknown";
@@ -553,7 +656,7 @@ namespace SeaPowerAgentBridge
                     {
                         // A new chat started: drop what belonged to the old transcript rather
                         // than mixing two agents' words on one page.
-                        _items.Clear();
+                        _items.RemoveAll(x => x.Target == "dsh");
                         _tailerNote = "session switched";
                     }
                 }
@@ -700,6 +803,7 @@ namespace SeaPowerAgentBridge
             lock (_lock)
             {
                 RefreshWorldLocked();
+                PullCodexLocked();
                 return new List<CommsItem>(_items);
             }
         }
@@ -736,8 +840,9 @@ namespace SeaPowerAgentBridge
             lock (_lock)
             {
                 RefreshWorldLocked();
+                PullCodexLocked();
                 world = WorldKey();
-                if (_perWorld && target == "dsh" && world == null)
+                if ((target == "codex" || _perWorld) && world == null)
                     throw new ApiException(409, "no_mission", "Wait for the mission to load", true);
                 msg.Id = _outSeq++;
                 _out.Add(msg);
@@ -786,7 +891,7 @@ namespace SeaPowerAgentBridge
                     line["at"] = msg.At;
                     line["text"] = text;
                     line["from"] = "player";
-                    if (target == "dsh" && world != null) line["world"] = world;
+                    if (world != null) line["world"] = world;
                     using (FileStream fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                     {
                         byte[] bytes = Encoding.UTF8.GetBytes(line.ToString(Newtonsoft.Json.Formatting.None) + "\n");
@@ -836,6 +941,7 @@ namespace SeaPowerAgentBridge
             JArray arr = new JArray();
             lock (_lock)
             {
+                PullCodexLocked();
                 int start = 0;
                 if (since > 0)
                 {
@@ -851,6 +957,7 @@ namespace SeaPowerAgentBridge
                     JObject o = new JObject();
                     o["seq"] = it.Seq;
                     o["kind"] = it.Kind;
+                    o["target"] = it.Target;
                     if (it.Phase.Length > 0) o["phase"] = it.Phase;
                     if (it.Text.Length > 0) o["text"] = it.Text;
                     if (it.Tool.Length > 0) o["tool"] = it.Tool;
@@ -880,7 +987,7 @@ namespace SeaPowerAgentBridge
                 o["items"] = _items.Count;
                 o["dropped"] = _dropped;
                 o["linesSeen"] = _lines;
-                o["pendingOutbox"] = _out.Count;
+                o["pendingOutbox"] = _out.FindAll(x => x.Target == "dsh" && !x.Matched).Count;
                 o["lastEventAgeMs"] = _lastLineAt <= 0 ? -1 : (long)(NowMs() - _lastLineAt);
                 o["attachedAgeMs"] = _lastAttachAt <= 0 ? -1 : (long)(NowMs() - _lastAttachAt);
                 if (_lastError.Length > 0) o["lastError"] = _lastError;
@@ -896,6 +1003,7 @@ namespace SeaPowerAgentBridge
                 for (int i = _items.Count - 1; i >= 0; i--)
                 {
                     CommsItem it = _items[i];
+                    if (it.Target != "dsh") continue;
                     if (it.Kind == "turn")
                     {
                         gen = it.Phase == "start" ? "working" : "idle";
@@ -905,6 +1013,7 @@ namespace SeaPowerAgentBridge
                     if (it.Kind == "execdone") { gen = "working"; break; }
                     if (it.Kind == "assistant") { gen = "working"; break; }
                 }
+                o["codex"] = State("codex");
                 o["generation"] = gen;
                 if (lastTool.Length > 0) o["lastTool"] = lastTool;
             }

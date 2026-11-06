@@ -1,10 +1,12 @@
-# 第二层 · MCP 转译
+# 第二层 · 转译层
+
+[文档索引](README.md) · [第一层：接口](layer1_bridge.md) · [第三层：Harness 调度](layer3_workflow.md)
 
 第二层由 [`mcp_server.py`](../mcp_server.py) 实现。它接收 MCP 工具调用，把参数转成第一层的 HTTP 请求，再把 Bridge 回执转换为 MCP 工具结果。
 
 ```text
 MCP 客户端 → JSON-RPC / stdio → mcp_server.py → 本机 HTTP → 游戏桥接
-游戏桥接   → comms/outbox.jsonl → 工单运行时 → 提醒（待接入）
+游戏桥接   → 事件/状态读取 → Harness 调度层 → 人机交互层显示
 ```
 
 Agent 负责提出工单及观察条件、接收提醒。第一层独立采样并产生事件，上层工单运行时负责关联证据、推进状态和到期询问玩家。已登记的规则由游戏进程继续执行，期间无需 Agent 调用工具或推理。当前第二层是开发和集成用的直连工具面，包含原始字段读取、游戏写入和 `sp_raw`。正式 Agent 可用能力由上层控制。
@@ -110,7 +112,7 @@ MLP 给普通候选排序。已知 `objectId` 变化由规则直接送入 `mustR
 2. 调用 `sp_watch_events`，传入游标及可选的 `watch_id`、`world_generation`。后续沿用返回的 `cursor`。不同过滤条件各自维护游标。省略游标会从当前文件末尾开始。
 3. `more=true` 时继续读取，按 `event_key` 跨轮去重。只将 `evidence=true` 的事件用作命中证据。收到 `outbox_reset` 时重新核对活跃规则并初始化游标。
 
-这一层提供主动轮询。工单状态推进和通知由规划中的[第三层运行时](layer3_workflow.md)负责。Watch 规则由游戏进程独立采样。采集器的常规 Watch 轮询开关与此路径独立。
+这一层提供主动轮询。工单状态推进和问题通知由[第三层 Harness 调度层](layer3_workflow.md)负责；通用 Watch 事件驱动的自动结单仍未接通。Watch 规则由游戏进程独立采样。采集器的常规 Watch 轮询开关与此路径独立。
 
 
 ## 其他接口差异

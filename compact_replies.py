@@ -3,7 +3,8 @@ import configparser
 from pathlib import Path
 
 TOOLS = frozenset(("sp_tracks", "sp_session", "sp_deck", "sp_ammo", "sp_session_fleet"))
-SETTINGS = Path(__file__).with_name("setting.ini")
+from runtime_layout import configuration_root
+SETTINGS = configuration_root() / "setting.ini"
 
 TRACK_FIELDS = (
     "trackId", "objectId", "side", "reportedBy", "type", "class", "knownClass",

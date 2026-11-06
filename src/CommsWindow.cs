@@ -62,6 +62,13 @@ namespace SeaPowerAgentBridge
         private static TextBlock _logEmpty;
         private static TextBlock _logFooter;
         private static StackPanel _orderPanel;
+        private static Border _ticketViewport;
+        private static TextBlock _ticketPageText;
+        private static int _ticketPage;
+        private static int _ticketPages = 1;
+        private static string _expandedTicket = "";
+        private static int _ticketDetailPage;
+        private static int _ticketDetailPages = 1;
         private static TextBox _input;
         private static Border _sendButton;
         private static TextBlock _sendLabel;
@@ -243,6 +250,12 @@ namespace SeaPowerAgentBridge
             _logPanel = null;
             _logViewport = null;
             _orderPanel = null;
+            _ticketViewport = null;
+            _ticketPageText = null;
+            _ticketPage = 0;
+            _ticketPages = 1;
+            _expandedTicket = "";
+            _ticketDetailPage = 0;
             _input = null;
             _sendButton = null;
             if (_portraitImage != null) _portraitImage.Source = null;
@@ -349,7 +362,7 @@ namespace SeaPowerAgentBridge
             footerGrid.ColumnDefinitions.Add(Col(150));
             footerGrid.ColumnDefinitions.Add(Col(124));
             footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            ComboBox target = FooterSelector(footerGrid, 0, new[] { "DSH", "Codex (WIP)" }, _target == "codex" ? 1 : 0);
+            ComboBox target = FooterSelector(footerGrid, 0, new[] { "DSH", "Codex" }, _target == "codex" ? 1 : 0);
             target.SelectionChanged += delegate
             {
                 _target = target.SelectedIndex == 1 ? "codex" : "dsh";
@@ -541,22 +554,86 @@ namespace SeaPowerAgentBridge
             Grid col = new Grid();
             col.RowDefinitions.Add(Row(18));
             col.RowDefinitions.Add(Row(0, true));
-
-            Border cap = Caption("CURRENT ORDER");
+            col.RowDefinitions.Add(Row(24));
+            Border cap = Caption("TASK TICKETS");
             Grid.SetRow(cap, 0);
             col.Children.Add(cap);
 
-            _orderPanel = new StackPanel();
-            _orderPanel.Orientation = Orientation.Vertical;
+            _orderPanel = new StackPanel { Orientation = Orientation.Vertical };
+            _ticketViewport = new Border { ClipToBounds = true, Child = _orderPanel };
+            _ticketViewport.MouseWheel += delegate(object sender, MouseWheelEventArgs e)
+            {
+                e.Handled = true;
+                MoveTicketPage(e.Delta > 0 ? -1 : 1);
+            };
+            Grid.SetRow(_ticketViewport, 1);
+            col.Children.Add(_ticketViewport);
 
-            Border box = new Border();
-            box.ClipToBounds = true;
-            box.Child = _orderPanel;
-            Grid.SetRow(box, 1);
-            col.Children.Add(box);
-
+            Grid pages = new Grid();
+            pages.ColumnDefinitions.Add(Col(50));
+            pages.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            pages.ColumnDefinitions.Add(Col(50));
+            Border previous = TicketButton("PREV");
+            previous.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            {
+                e.Handled = true;
+                MoveTicketPage(-1);
+            };
+            pages.Children.Add(previous);
+            _ticketPageText = new TextBlock
+            {
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 150, 185, 210)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(_ticketPageText, 1);
+            pages.Children.Add(_ticketPageText);
+            Border next = TicketButton("NEXT");
+            next.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            {
+                e.Handled = true;
+                MoveTicketPage(1);
+            };
+            Grid.SetColumn(next, 2);
+            pages.Children.Add(next);
+            Grid.SetRow(pages, 2);
+            col.Children.Add(pages);
             panel.Child = col;
             return panel;
+        }
+
+        private static Border TicketButton(string label)
+        {
+            return new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(255, 18, 45, 64)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 62, 105, 136)),
+                BorderThickness = new Thickness(1),
+                IsHitTestVisible = true,
+                Child = new TextBlock
+                {
+                    Text = label,
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 205, 230, 245)),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+        }
+
+        private static void MoveTicketPage(int delta)
+        {
+            if (_expandedTicket.Length > 0)
+            {
+                int detailPage = Math.Max(0, Math.Min(_ticketDetailPages - 1, _ticketDetailPage + delta));
+                if (detailPage != _ticketDetailPage) { _ticketDetailPage = detailPage; Refresh(true); }
+                return;
+            }
+            int page = Math.Max(0, Math.Min(_ticketPages - 1, _ticketPage + delta));
+            if (page == _ticketPage) return;
+            _ticketPage = page;
+            Refresh(true);
         }
 
         private static Border BuildInputRow()
@@ -647,7 +724,7 @@ namespace SeaPowerAgentBridge
         private static bool CanStop(JObject state)
         {
             string generation = AsStr(state["generation"]);
-            return _target == "dsh" && AsStr(state["link"]) == "attached" &&
+            return AsStr(state["link"]) == "attached" &&
                 !string.IsNullOrEmpty(AsStr(state["sessionId"])) &&
                 (generation == "working" || generation == "executing");
         }
@@ -655,30 +732,32 @@ namespace SeaPowerAgentBridge
         private static void OnStopClick(object sender, MouseButtonEventArgs e)
         {
             e.Handled = true;
-            JObject state = CommsBridge.State();
+            JObject state = CommsBridge.State(_target);
             if (!CanStop(state) || UnityEngine.Time.realtimeSinceStartup < _stopQueuedUntil) return;
             string temp = null;
             try
             {
                 string run = System.IO.Path.Combine(Core.ModDir(), "comms", "run");
                 System.IO.Directory.CreateDirectory(run);
-                string requestFile = System.IO.Path.Combine(run, "dsh.stop.json");
+                string requestFile = System.IO.Path.Combine(run, _target + ".stop.json");
                 if (System.IO.File.Exists(requestFile) &&
                     DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(requestFile) > TimeSpan.FromSeconds(5))
                     System.IO.File.Delete(requestFile);
 
                 JObject request = new JObject();
                 request["sessionId"] = AsStr(state["sessionId"]);
+                request["worldKey"] = state["worldKey"];
+                if (state["turnId"] != null) request["turnId"] = state["turnId"];
                 request["expiresAt"] = (DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds + 5000;
                 temp = requestFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 System.IO.File.WriteAllText(temp, request.ToString(Newtonsoft.Json.Formatting.None));
                 System.IO.File.Move(temp, requestFile);
                 _stopQueuedUntil = UnityEngine.Time.realtimeSinceStartup + 5;
-                _status = "DSH stop requested";
+                _status = _target.ToUpperInvariant() + " stop requested";
             }
             catch (Exception ex)
             {
-                _status = "DSH stop request failed";
+                _status = _target.ToUpperInvariant() + " stop request failed";
                 Core.Log("comms stop: " + ex.Message);
             }
             finally
@@ -945,7 +1024,7 @@ namespace SeaPowerAgentBridge
             e.Handled = true;
         }
         // ================================================== refresh
-        private static long Signature(List<CommsItem> items, JObject st)
+        private static long Signature(List<CommsItem> items, JObject st, JArray tickets)
         {
             long sig = 1469598103934665603L;
             for (int i = 0; i < items.Count; i++)
@@ -975,6 +1054,12 @@ namespace SeaPowerAgentBridge
                 sig = (sig ^ ((int)_logViewport.ActualHeight)) * 1099511628211L;
                 sig = (sig ^ ((int)_logViewport.ActualWidth)) * 1099511628211L;
             }
+            sig = (sig ^ tickets.ToString(Newtonsoft.Json.Formatting.None).GetHashCode()) * 1099511628211L;
+            sig = (sig ^ _ticketPage) * 1099511628211L;
+            sig = (sig ^ _expandedTicket.GetHashCode()) * 1099511628211L;
+            sig = (sig ^ _ticketDetailPage) * 1099511628211L;
+            if (_ticketViewport != null)
+                sig = (sig ^ (int)_ticketViewport.ActualHeight) * 1099511628211L;
             return sig;
         }
 
@@ -1032,19 +1117,20 @@ namespace SeaPowerAgentBridge
         private static void Refresh(bool force)
         {
             if (_wrap == null) return;
-            JObject st = CommsBridge.State();
+            JObject st = CommsBridge.State(_target);
             List<CommsItem> items = CommsBridge.Snapshot();
             items.RemoveAll(item => item.Target != _target);
             if (_stopButton != null)
             {
                 bool canStop = CanStop(st);
-                if (!canStop && _target == "dsh") _stopQueuedUntil = 0;
+                if (!canStop) _stopQueuedUntil = 0;
                 bool enabled = canStop && UnityEngine.Time.realtimeSinceStartup >= _stopQueuedUntil;
-                _stopButton.Visibility = _target == "dsh" ? Visibility.Visible : Visibility.Collapsed;
+                _stopButton.Visibility = Visibility.Visible;
                 _stopButton.IsEnabled = enabled;
                 _stopButton.Opacity = enabled ? 1.0f : 0.45f;
             }
-            long sig = Signature(items, st);
+            JArray tickets = TicketBridge.Snapshot();
+            long sig = Signature(items, st, tickets);
             if (!force && sig == _signature) return;
             _signature = sig;
 
@@ -1056,10 +1142,10 @@ namespace SeaPowerAgentBridge
 
             if (_badgeText != null) _badgeText.Text = CommsBridge.AgentCall;
             if (_title != null)
-                _title.Text = _target == "codex" ? "CODEX / DESKTOP" : CommsBridge.AgentName + (linked ? " / ONLINE" : " / OFFLINE");
+                _title.Text = (_target == "codex" ? "CODEX" : CommsBridge.AgentName) + (linked ? " / ONLINE" : " / OFFLINE");
             if (_linkText != null)
             {
-                _linkText.Text = "DSH " + (link == null ? "?" : link.ToUpperInvariant());
+                _linkText.Text = _target.ToUpperInvariant() + " " + (link == null ? "?" : link.ToUpperInvariant());
                 _linkText.Foreground = new SolidColorBrush(linked
                     ? Color.FromArgb(255, 120, 230, 160)
                     : Color.FromArgb(255, 255, 190, 90));
@@ -1087,7 +1173,7 @@ namespace SeaPowerAgentBridge
             }
 
             PaintLog(items, st, sig);
-            PaintOrder();
+            PaintOrder(tickets);
 
             if (_statusText != null)
             {
@@ -1331,42 +1417,166 @@ namespace SeaPowerAgentBridge
             return t;
         }
 
-        private static void PaintOrder()
+        private static void PaintOrder(JArray tickets)
         {
             if (_orderPanel == null) return;
             _orderPanel.Children.Clear();
-
-            // Source of truth for "what did the agent ask the game to do" is the bridge's
-            // own action log. When it has nothing, the panel says so instead of dressing
-            // up the last chat line as an order - the brief forbids inventing state.
-            List<InspectorEvent> actions = null;
-            try { actions = InspectorBuffer.Snapshot("ActionIssued", null, null); }
-            catch (Exception) { }
-            InspectorEvent last = null;
-            if (actions != null && actions.Count > 0) last = actions[actions.Count - 1];
-
-            if (last == null)
+            if (_expandedTicket.Length > 0)
             {
-                _orderPanel.Children.Add(Field("MSG", Strings.T("comms.noOrders"), Color.FromArgb(255, 200, 150, 110)));
-                _orderPanel.Children.Add(Field("STATUS", "N/A", Color.FromArgb(255, 140, 170, 195)));
+                JObject selected = null;
+                foreach (JObject candidate in tickets)
+                    if (AsStr(candidate["id"]) == _expandedTicket) { selected = candidate; break; }
+                if (selected != null) { PaintTicketDetails(selected); return; }
+                _expandedTicket = "";
+                _ticketDetailPage = 0;
+            }
+            if (tickets.Count == 0)
+            {
+                _ticketPage = 0;
+                _ticketPages = 1;
+                _orderPanel.Children.Add(Field("", "本局暂无工单", Color.FromArgb(255, 150, 185, 210)));
+                if (_ticketPageText != null) _ticketPageText.Text = "0 tickets";
                 return;
             }
+            double height = _ticketViewport == null ? 0 : (double)_ticketViewport.ActualHeight;
+            int perPage = Math.Max(1, (int)(height / 184));
+            _ticketPages = (tickets.Count + perPage - 1) / perPage;
+            _ticketPage = Math.Min(_ticketPage, _ticketPages - 1);
+            int start = _ticketPage * perPage;
+            int end = Math.Min(tickets.Count, start + perPage);
+            for (int i = start; i < end; i++)
+            {
+                JObject ticket = tickets[i] as JObject;
+                if (ticket == null) continue;
+                string id = AsStr(ticket["id"]);
+                Grid card = new Grid { Margin = new Thickness(0, 2, 0, 4) };
+                foreach (int size in new[] { 30, 22, 44, 48, 26 }) card.RowDefinitions.Add(Row(size));
+                card.Children.Add(Field("", TicketText(AsStr(ticket["title"]), 36), Color.FromArgb(255, 214, 240, 255)));
+                TextBlock state = Field("", AsStr(ticket["resultLabel"]), Color.FromArgb(255, 255, 214, 130));
+                if (state.Text.Length == 0) state.Text = AsStr(ticket["status"]);
+                Grid.SetRow(state, 1);
+                card.Children.Add(state);
+                string summary = AsStr(ticket["summary"]);
+                if (summary.Length == 0) summary = AsStr(ticket["detail"]);
+                TextBlock detail = Field("", TicketText(summary, 70), Color.FromArgb(255, 160, 195, 218));
+                Grid.SetRow(detail, 2);
+                card.Children.Add(detail);
+                TextBlock commands = Field("", TicketText(AsStr(ticket["commandSummary"]), 45) + "\n" + TicketText(AsStr(ticket["watchSummary"]), 45), Color.FromArgb(255, 160, 210, 190));
+                Grid.SetRow(commands, 3);
+                card.Children.Add(commands);
+                Grid actions = new Grid();
+                actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                Border expand = TicketButton("显示详情");
+                expand.Margin = new Thickness(0, 0, 4, 0);
+                expand.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+                {
+                    e.Handled = true;
+                    _expandedTicket = id;
+                    _ticketDetailPage = 0;
+                    Refresh(true);
+                };
+                actions.Children.Add(expand);
+                Border destroy = TicketDestroyButton(ticket);
+                Grid.SetColumn(destroy, 1);
+                actions.Children.Add(destroy);
+                Grid.SetRow(actions, 4);
+                card.Children.Add(actions);
+                _orderPanel.Children.Add(card);
+            }
+            if (_ticketPageText != null)
+                _ticketPageText.Text = (_ticketPage + 1) + "/" + _ticketPages + " · " + tickets.Count;
+        }
 
-            string id = string.IsNullOrEmpty(last.EventId) ? "N/A" : last.EventId;
-            string when = last.Timestamp == null ? "" : last.Timestamp;
-            if (when.Length > 8) when = when.Substring(0, 8);
-            _orderPanel.Children.Add(Field("MSG", id + (when.Length > 0 ? "   " + when : ""), Color.FromArgb(255, 210, 235, 250)));
-            _orderPanel.Children.Add(Field("FROM", "HARNESS", Color.FromArgb(255, 190, 215, 235)));
-            _orderPanel.Children.Add(Field("TO", "GAME BRIDGE", Color.FromArgb(255, 190, 215, 235)));
-            _orderPanel.Children.Add(Field("PRIORITY", "N/A", Color.FromArgb(255, 150, 175, 200)));
-            _orderPanel.Children.Add(Field("SUBJECT", string.IsNullOrEmpty(last.Summary) ? "N/A" : last.Summary, Color.FromArgb(255, 214, 240, 255)));
-            string payload = last.InputPayload;
-            _orderPanel.Children.Add(Field("BODY", string.IsNullOrEmpty(payload) ? "N/A" : Clean(payload), Color.FromArgb(255, 200, 226, 245)));
-            string status = string.IsNullOrEmpty(last.Status) ? "" : last.Status;
-            if (string.IsNullOrEmpty(status)) status = last.ErrorMessage == null ? "N/A" : last.ErrorMessage;
-            _orderPanel.Children.Add(Field("STATUS", status, Color.FromArgb(255, 255, 214, 130)));
-            if (last.DurationMs >= 0)
-                _orderPanel.Children.Add(Field("ELAPSED", (long)last.DurationMs + " ms", Color.FromArgb(255, 150, 175, 200)));
+        private static Border TicketDestroyButton(JObject ticket)
+        {
+            string id = AsStr(ticket["id"]);
+            Border destroy = TicketButton("DESTROY");
+            destroy.IsEnabled = (bool?)ticket["canDestroy"] == true;
+            destroy.Opacity = destroy.IsEnabled ? 1.0f : 0.45f;
+            destroy.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            {
+                e.Handled = true;
+                DestroyTicket(id);
+            };
+            return destroy;
+        }
+
+        private static void PaintTicketDetails(JObject ticket)
+        {
+            // Use the proven Border/StackPanel path, with full-text pages rather than
+            // a ScrollViewer template unavailable in this game's Noesis resources.
+            Border back = TicketButton("收起详情 / 返回列表");
+            back.Height = 26;
+            back.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            {
+                e.Handled = true;
+                _expandedTicket = "";
+                _ticketDetailPage = 0;
+                Refresh(true);
+            };
+            _orderPanel.Children.Add(back);
+            Border destroy = TicketDestroyButton(ticket);
+            destroy.Height = 24;
+            destroy.Margin = new Thickness(0, 4, 0, 8);
+            _orderPanel.Children.Add(destroy);
+            string text = "任务：" + AsStr(ticket["title"]) + "\n\n" + AsStr(ticket["detailText"]);
+            if (AsStr(ticket["detailText"]).Length == 0) text += AsStr(ticket["detail"]);
+            double width = _ticketViewport == null ? 220 : (double)_ticketViewport.ActualWidth;
+            double usable = Math.Max(40, width - 12);
+            List<string> lines = new List<string>();
+            foreach (string paragraph in text.Replace("\r", "").Split('\n'))
+            {
+                string line = "";
+                double used = 0;
+                for (int i = 0; i < paragraph.Length; i++)
+                {
+                    string glyph = paragraph[i].ToString();
+                    if (char.IsHighSurrogate(paragraph[i]) && i + 1 < paragraph.Length && char.IsLowSurrogate(paragraph[i + 1]))
+                        glyph += paragraph[++i];
+                    double advance = glyph[0] < 128 ? 7.2 : 12.5;
+                    if (used + advance > usable && line.Length > 0) { lines.Add(line); line = ""; used = 0; }
+                    line += glyph;
+                    used += advance;
+                }
+                lines.Add(line);
+            }
+            double height = _ticketViewport == null ? 300 : (double)_ticketViewport.ActualHeight;
+            int perPage = Math.Max(1, (int)((height - 82) / 20));
+            _ticketDetailPages = Math.Max(1, (lines.Count + perPage - 1) / perPage);
+            _ticketDetailPage = Math.Min(_ticketDetailPage, _ticketDetailPages - 1);
+            int first = _ticketDetailPage * perPage;
+            for (int i = first; i < Math.Min(lines.Count, first + perPage); i++)
+            {
+                TextBlock row = Field("", lines[i], Color.FromArgb(255, 214, 230, 242));
+                row.TextWrapping = TextWrapping.NoWrap;
+                row.Height = 18;
+                _orderPanel.Children.Add(row);
+            }
+            _orderPanel.Children.Add(new Border { Height = 8 });
+            if (_ticketPageText != null) _ticketPageText.Text = "详情 " + (_ticketDetailPage + 1) + "/" + _ticketDetailPages;
+        }
+
+        private static string TicketText(string value, int limit)
+        {
+            string text = (value ?? "").Replace('\r', ' ').Replace('\n', ' ');
+            return text.Length <= limit ? text : text.Substring(0, limit - 1) + "…";
+        }
+
+        private static void DestroyTicket(string id)
+        {
+            try
+            {
+                JObject result = TicketBridge.Destroy(id);
+                bool queued = result != null && ((bool?)result["queued"] == true || (bool?)result["ok"] == true);
+                _status = queued ? "ticket destroy requested" : "ticket destroy failed";
+            }
+            catch (Exception ex)
+            {
+                _status = "ticket destroy failed";
+                Core.Log("ticket destroy: " + ex.Message);
+            }
+            Refresh(true);
         }
 
         private static TextBlock Field(string label, string value, Color color)

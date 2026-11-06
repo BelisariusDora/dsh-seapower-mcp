@@ -24,6 +24,24 @@ namespace SeaPowerAgentBridge
     {
         public const string PageInspector = "inspector";
         public const string PageComms = "comms";
+        public const string PageSettings = "settings";
+        private static string _toggleKey;
+
+        internal static string ToggleKeyName()
+        {
+            if (_toggleKey == null)
+            {
+                try { SetToggleKey(PlayerSettings.Load(Core.ModDir()).MenuToggleKey); }
+                catch (Exception) { _toggleKey = "N"; }
+            }
+            return _toggleKey;
+        }
+
+        internal static void SetToggleKey(string value)
+        {
+            string parsed;
+            _toggleKey = PlayerSettings.TryMenuKey(value, out parsed) ? parsed : "N";
+        }
 
         private const string ShellName = "DshConsoleShell";
         private const double TitleH = 26.0;
@@ -71,6 +89,8 @@ namespace SeaPowerAgentBridge
         private static double _lastContentH = -1.0;
         private static Border _cellInspector;
         private static Border _cellComms;
+        private static Border _cellSettings;
+        private static TextBlock _labelSettings;
         private static TextBlock _labelInspector;
         private static TextBlock _labelComms;
         private static TextBlock _linkText;
@@ -124,9 +144,9 @@ namespace SeaPowerAgentBridge
             bool typing = false;
             try { typing = UiBridge.Typing; }
             catch (Exception) { }
-            if (typing) return false;
+            if (typing || SettingsWindow.IsCapturingKey) return false;
 
-            if (string.Equals(name.Trim(), "N", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(name.Trim(), ToggleKeyName(), StringComparison.OrdinalIgnoreCase))
             {
                 // A rolled-up console answers N by unrolling, not by closing: otherwise the
                 // title bar the operator can see would not be the thing the key acts on.
@@ -182,6 +202,7 @@ namespace SeaPowerAgentBridge
         /// <summary>Roll the shell up to its title bar. Pressing it again unrolls it.</summary>
         public static JObject Minimize()
         {
+            SettingsWindow.CancelCapture();
             _minimized = !_minimized;
             if (_minimized) _maximized = false;
             _paintedKey = null;
@@ -235,11 +256,11 @@ namespace SeaPowerAgentBridge
 
         public static JObject Show(string page)
         {
-            if (page != PageInspector && page != PageComms) return State();
+            if (page != PageInspector && page != PageComms && page != PageSettings) return State();
             if (_active != page)
             {
                 _paintedKey = null;
-                Remove(Other(page));
+                Remove(_active);
             }
             _active = page;
             _open = true;
@@ -254,9 +275,10 @@ namespace SeaPowerAgentBridge
             o["host"] = "console";
             o["open"] = _open;
             o["active"] = _active;
-            o["tabs"] = new JArray(new object[] { "AGENT INSPECTOR", "HARNESS COMMS" });
+            o["tabs"] = new JArray(new object[] { PageInspector, PageComms, PageSettings });
+            o["settings"] = SettingsWindow.State();
             o["switchBy"] = "click a tab in the window tab row";
-            o["hotkey"] = "N";
+            o["hotkey"] = ToggleKeyName();
             o["titleButtons"] = new JArray(new object[] { "minimize", "maximize", "close" });
             o["resizable"] = true;
             o["resizeBy"] = "drag any edge or corner; maximize fits the visible tactical area";
@@ -286,10 +308,10 @@ namespace SeaPowerAgentBridge
             if (op == "show")
             {
                 string page = Convert.ToString(req["page"]);
-                if (page != PageInspector && page != PageComms)
+                if (page != PageInspector && page != PageComms && page != PageSettings)
                 {
                     throw new ApiException(400, "bad_value",
-                        "page must be 'inspector' or 'comms'", false);
+                        "page must be 'inspector', 'comms' or 'settings'", false);
                 }
                 return Show(page);
             }
@@ -313,7 +335,7 @@ namespace SeaPowerAgentBridge
 
         private static string Other(string page)
         {
-            return page == PageInspector ? PageComms : PageInspector;
+            return page == PageInspector ? PageComms : page == PageComms ? PageSettings : PageInspector;
         }
 
         // ================================================== shell
@@ -368,6 +390,7 @@ namespace SeaPowerAgentBridge
             if (_shell == null) return;
             Remove(PageInspector);
             Remove(PageComms);
+            Remove(PageSettings);
             try
             {
                 Panel parent = _shell.Parent as Panel;
@@ -380,6 +403,8 @@ namespace SeaPowerAgentBridge
             _content = null;
             _cellInspector = null;
             _cellComms = null;
+            _cellSettings = null;
+            _labelSettings = null;
             _labelInspector = null;
             _labelComms = null;
             _linkText = null;
@@ -490,6 +515,9 @@ namespace SeaPowerAgentBridge
             tabRow.Children.Add(_cellInspector);
             _cellComms = TabCell(_labelComms, "HARNESS COMMS", OnClickComms);
             tabRow.Children.Add(_cellComms);
+            _labelSettings = new TextBlock();
+            _cellSettings = TabCell(_labelSettings, Strings.T("console.settings"), OnClickSettings);
+            tabRow.Children.Add(_cellSettings);
 
             // ---- content well: the active page fills this with its own chrome hidden
             Grid content = new Grid();
@@ -583,13 +611,14 @@ namespace SeaPowerAgentBridge
             if (_shell == null) return;
             ApplyShellGeometry();
 
-            string key = _active + "|" + (IsInstalled(_active) ? "1" : "0") + "|" + _maximized;
+            string key = _active + "|" + (IsInstalled(_active) ? "1" : "0") + "|" + _maximized + "|" + Strings.T("console.settings");
             if (!string.IsNullOrEmpty(_paintedKey) && key == _paintedKey) return;
             _paintedKey = key;
 
             bool onInspector = _active == PageInspector;
-            PaintTab(_cellInspector, _labelInspector, "AGENT INSPECTOR", onInspector);
-            PaintTab(_cellComms, _labelComms, "HARNESS COMMS", !onInspector);
+            PaintTab(_cellInspector, _labelInspector, Strings.T("console.inspector"), onInspector);
+            PaintTab(_cellComms, _labelComms, Strings.T("console.comms"), _active == PageComms);
+            PaintTab(_cellSettings, _labelSettings, Strings.T("console.settings"), _active == PageSettings);
 
             JObject st = null;
             try { st = CommsBridge.State(); }
@@ -720,6 +749,12 @@ namespace SeaPowerAgentBridge
             Show(PageComms);
         }
 
+        private static void OnClickSettings(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            Show(PageSettings);
+        }
+
         // ================================================== move
 
         private static void OnTitleDown(object sender, MouseButtonEventArgs e)
@@ -828,7 +863,8 @@ namespace SeaPowerAgentBridge
         {
             if (!_open || _content == null) return;
 
-            if (IsInstalled(Other(_active))) Remove(Other(_active));
+            foreach (string page in new string[] { PageInspector, PageComms, PageSettings })
+                if (page != _active && IsInstalled(page)) Remove(page);
 
             if (IsInstalled(_active))
             {
@@ -866,7 +902,8 @@ namespace SeaPowerAgentBridge
             try
             {
                 if (_active == PageInspector) InspectorWindow.FillContentArea(_content);
-                else CommsWindow.FillContentArea(_content);
+                else if (_active == PageComms) CommsWindow.FillContentArea(_content);
+                else SettingsWindow.FillContentArea(_content);
                 try { if (_content != null) _content.UpdateLayout(); } catch (Exception) { }
             }
             catch (Exception ex)
@@ -885,7 +922,7 @@ namespace SeaPowerAgentBridge
         {
             try
             {
-                return page == PageInspector ? InspectorWindow.IsInstalled : CommsWindow.IsInstalled;
+                return page == PageInspector ? InspectorWindow.IsInstalled : page == PageComms ? CommsWindow.IsInstalled : SettingsWindow.IsInstalled;
             }
             catch (Exception) { return false; }
         }
@@ -894,7 +931,7 @@ namespace SeaPowerAgentBridge
         {
             try
             {
-                return page == PageInspector ? InspectorWindow.Install() : CommsWindow.Install();
+                return page == PageInspector ? InspectorWindow.Install() : page == PageComms ? CommsWindow.Install() : SettingsWindow.Install(_content);
             }
             catch (ApiException ex)
             {
@@ -915,7 +952,8 @@ namespace SeaPowerAgentBridge
             try
             {
                 if (page == PageInspector) InspectorWindow.Remove();
-                else CommsWindow.Remove();
+                else if (page == PageComms) CommsWindow.Remove();
+                else SettingsWindow.Remove();
             }
             catch (Exception) { }
         }
@@ -923,10 +961,10 @@ namespace SeaPowerAgentBridge
         /// <summary>Footer text both pages print, so their tab row matches the shell.</summary>
         public static string Strip()
         {
-            bool onInspector = _active == PageInspector;
-            string a = onInspector ? " \u25B8 AGENT INSPECTOR" : "   AGENT INSPECTOR";
-            string b = onInspector ? "   HARNESS COMMS" : " \u25B8 HARNESS COMMS";
-            return "[" + a + "] [" + b + "]";
+            string a = (_active == PageInspector ? " ▸ " : "   ") + Strings.T("console.inspector");
+            string b = (_active == PageComms ? " ▸ " : "   ") + Strings.T("console.comms");
+            string c = (_active == PageSettings ? " ▸ " : "   ") + Strings.T("console.settings");
+            return "[" + a + "] [" + b + "] [" + c + "]";
         }
 
         // ================================================== layout helpers

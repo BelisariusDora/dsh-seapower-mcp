@@ -1,127 +1,47 @@
-# spmcp_v2 — 第一层（游戏桥接）文档
+# Sea Power MCP 项目文档
 
-[从源码构建与安装发布包](DEPLOY.md)
+本项目按职责划分为四层。源码和部署目录沿用现有结构，不因文档分层新增进程、框架或通信协议。当前状态以各层说明和实测范围为准；TR 工单文档同时保留历史过程。
 
-第二层的启动、工具映射和回执约定见 [MCP 转译](layer2_translation.md)。
-
-部署产物位于游戏的 `StreamingAssets/dsh-spmcp`。通过 `GET /ping` 比对加载中的 build stamp 和磁盘 stamp。
-
-第三层的通信、DSH / Codex 接入和工单设计见 [玩家交互与工单运行时](layer3_workflow.md)。
-
-老项目 `tools/spmcp` 从此是 legacy：只读、不再改动，作为行为参照与回退点。
-
----
-
-## 1. 这一层负责什么
-
-第一层是唯一能碰 Unity / Noesis 的代码层。它的职责只有三条：
-
-1. **宿主**：作为 AnchorChain mod 被游戏加载，提供一个本地 HTTP 服务（默认 `127.0.0.1:19080`）。
-2. **线程闸门**：所有游戏对象访问都必须在主线程执行；HTTP 线程只能投递任务。
-3. **事实来源**：把游戏世界读成 JSON、把命令写回游戏，**不做策略判断**（这是与 legacy 的唯一设计差别，见 §6）。
-
-它不负责：MCP 工具面、Agent 会话、命令授权/账本、玩家情报遮蔽、界面交互。那些在更上层。
-
-## 2. 文件地图
-
-| 文件 | 职责 | 迁移状态 |
+| 层 | 主要职责 | 文档 |
 |---|---|---|
-| `src/Bridge.cs` | `[ACPlugin]` 入口、`Core` 主线程队列、`MiniHttp` 启动、每帧泵 | 原样迁入 + 一行 `Watch.Tick()` |
-| `src/MiniHttp.cs` | 手写 socket HTTP/1.1，无第三方依赖 | 原样 |
-| `src/Api.cs` | 路由总表、信封、`DeadlineMs`、单位命令七层门 | 原样 + `Dispatch` 前面加了 `/watch` 分流 + 两个只读辅助 |
-| `src/GameReflect.cs` | 程序集索引、成员反射、IL 判 stub、异常回传变体 | 原样 |
-| `src/SessionRegistry.cs` | 对局/世界重建分类、`RequireStable` 写闸 | 原样 |
-| `src/CommsBridge.cs` | 游戏→外部（harness）的**出站**文件通道 | 原样 |
-| `src/ContactView.cs` `TrackScope.cs` `IntelScope.cs` `IntelPolicy.cs` | 接触投影与情报策略 | 保留接口，情报可见性策略已放开（见 §6） |
-| `src/Weapons.cs` `Control.cs` `Sonobuoy.cs` `LandUnits.cs` `LandRead.cs` `UnitTypeGate.cs` | 平台能力与类型闸 | 原样 |
-| `src/MapView.cs` `MapUnits.cs` `MapPlot.cs` `MapDraw.cs` | 地图与图元 | 原样 |
-| `src/Shots.cs` | 截图（与武器无关，名字是历史包袱） | 原样 |
-| `src/ConsoleHost.cs` `InspectorWindow.cs` `InspectorBridge.cs` `CommsWindow.cs` `Strings.cs` | 游戏内 UI 单壳两页 | 原样 |
-| **`src/Watch.cs`** | **原生触发器注册表 + 主线程求值** | **新增**，见 `layer1_bridge.md` |
+| 第一层：接口层 | 游戏内状态读取、命令提交、主线程访问、HOLD 与原生 Watch | [接口层](layer1_bridge.md) |
+| 第二层：转译层 | MCP 工具/schema、HTTP 参数与回执转译、字段投影、航迹简报和 MLP、图像及 Watch 事件读取 | [转译层](layer2_translation.md) |
+| 第三层：Harness 调度层 | 本局主会话、DSH/Codex Adapter、工单生命周期、执行者选择、调用账本、真值判定与异常通知 | [Harness 调度层](layer3_workflow.md) |
+| 第四层：人机交互层 | 游戏控制台、通联、工单详情、STOP/DESTROY 入口、Settings、键位、本地化与 persona 表达 | [人机交互层](layer4_interaction.md) |
 
-## 3. 线程模型（改动这一层前必读）
+## 阅读顺序与依赖
 
-- `Core.OnMainThread(fn, timeoutMs)`：已在主线程则**直接执行**（入队会死锁）；否则入队等待。
-- 超时用 `CompareExchange(Pending→Cancelled)` 判定：
-  - 仍是 Pending → 任务从未执行，抛 `MainThreadTimeoutException(safe:true)`；
-  - 已开始 → 再等 50 ms，仍未完成抛 `safe:false`，含义是「**可能已经执行**」。
-- 这个 `safe` 位是防重复开火的核心：上层看到 `safe:false` 时**不许重发**。
-- 每帧 `Core.Pump(6)` 排 6 个任务；游戏卡住时队列会积压，这是预期行为。
-- 唯一会长时间占住主线程的是 `Shots` 的等帧截图（内部 12 s 兜底）。
+部署先读 [部署指南](DEPLOY.md) 和 [模块目录](deployment_layout.md)；开发先读对应层，再读相邻层的输入输出边界。
 
-## 4. 请求路径与信封
-
-```
-HTTP → MiniHttp → Api.Dispatch → (Watch.Matches? Watch.Handle : DispatchCore)
+```text
+玩家 ↔ 第四层：控制台 / 通联 / 设置
+              ↕ 玩家输入、结果显示、停止请求
+       第三层：主 Agent / 工单调度 / 执行 Adapter
+              ↕ MCP 工具、受控调用、结果证据
+       第二层：MCP ↔ HTTP 转译 / 字段投影
+              ↕ 本机 HTTP 请求与回执
+       第一层：Bridge ↔ Sea Power 游戏对象
 ```
 
-- 统一信封：`{ "cmd": <requestId>, "ok": <bool>, "data": {...}, "refused": <bool>, "error": {code,message,retryable} }`。
-- `ok` 为 `false` 时 HTTP 状态仍是 **200**（业务拒绝不是传输失败）；只有路由未捕获异常是 500，主线程超时是 504。
-- 每路由等待预算由 `DeadlineMs(method, path)` 给出（表驱动，见 `Api.cs`）：`/console` 4000、`/state|/taskforces|/time` 8000、`/units/{id}` 读 8000、`/units/{id}/{weapons,deck,airborne,decktasks,vertical,sub,land}` 12000、`/map/*` 15000（`units|unit-screen` 20000）、`/plot/course` 30000、`/plot/{draw,drawings,erase}` 45000、`/group/*` 25000、默认 15000。
-- 客户端预算必须**严格大于**桥侧预算（legacy 用 `TIMEOUT_FLOOR=25` 保证），否则超时会先断在客户端，看起来像"桥没回答"。
-- 写入口只有两处：`POST /units/{id}/{op}` 与 `POST /plot/*`、`POST /map/*`、`POST /time`、`POST /ui/hold`。
+上图是主要业务路径，并非强制逐层网络转发：第三层调度器也直接读取第一层真值和工单协议；第四层通过现有通联/工单协议提交控制意图，并读取第三层快照。第一层和第四层的 C# 代码共用 SeaPowerAgentBridge.dll；第二层和第三层复用既有 Python handler，不复制游戏 API。
 
-## 5. 主线程之外的三个"例外"通道
+## 专题归属
 
-1. `GET /ping`、`GET /diag` 走 inline（`IsThreadFreeProbe`），不经过主线程 hop——泵死时它们是唯一还能回答的东西，因此**不能访问游戏对象**。
-2. `/watch` 自己 hop 一次（8000 ms），再在主线程求值。
-3. `GET /shot/png` 返回 PNG 字节，不套信封。
+| 专题 | 归属及说明 |
+|---|---|
+| [工单运行时与 TR 历史](ticket_runtime_plan.md) | 第三层；历史里程碑不等于当前全部能力 |
+| [仅主 Agent 模式](main_agent_mode.md) | 第三层执行模式；第四层 Settings 提供默认关闭的开关 |
+| [异常通知闭环](ticket_notifications.md) | 第三层决定投递、去重和权限；第四层显示主 Agent 的文字转述 |
+| [工单结果与详情](ticket_results_ui.md) | 第三层生成账本视图；第四层卡片、展开和分页 |
+| [Settings 与菜单键位](settings_page.md) | 第四层草稿、保存和语言；各配置消费者在对应层生效 |
+| [模块化部署](deployment_layout.md) | 跨层物理目录与兼容入口 |
 
-## 6. 当前策略与部署
+## 当前能力与验证边界
 
-第一层按项目决定放开情报隔离。平台能力、命令参数校验和写入闸门仍由桥接层处理。当前部署更新已有的 `dsh-spmcp` 槽位，插件 ID 为 `dsh.spmcp.bridge`，监听端口为 `19080`。
+- DSH、Codex 均支持本局独立主会话；Worker 模式保留，开启仅主 Agent 后仍建单，由主会话同轮执行。
+- 通用任务 executed 只表示接口执行有回执，不表示战果确认；航速专用判据由调度器采集两次新鲜真值后才 completed。
+- Worker 问题结果可交回原主会话转述；通知轮次始终只能文字回复，不得追加操作。
+- 2026-11-06 实机验收覆盖两端仅主 Agent 只读任务、游戏 STOP、经工单 HTTP 协议的销毁，以及关闭开关后的 DSH Worker/异常通知回归。本轮没有验证战术写入、切局或实际战果，详见 [主模式验收](main_agent_mode.md)。
+- Watch 原生采样、事件读取和证据展示已存在；通用 Watch 自动结单未接通，不能把登记成功当成条件命中。
 
-## 7. 构建与部署
-
-```powershell
-cd tools\spmcp_v2
-powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1            # 只编译
-powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Deploy    # 部署到 dsh-spmcp（必须先关游戏）
-```
-
-编译器是 .NET Framework 的 `csc.exe`（C# 5 语法，必须带 `/noconfig`），引用取自 `Sea Power_Data\Managed` 与 AnchorChain 的 `AnchorChain.dll`。改代码时注意：本仓 `src/*.cs` 行尾**不统一**（`Api.cs` CRLF，`Control/Weapons/Sonobuoy/MapDraw` LF），批量替换脚本必须两种行尾都试。
-
-## 8. 部署后核验
-
-1. 重启游戏后请求 `GET /ping`，检查 `build.stamp` 与 `build.onDiskStamp` 一致，且 `build.staleDll` 为 false。
-2. 请求 `GET /diag`、`GET /state` 和 `GET /session`，核验主线程泵、场景和世界代际。
-3. 按 [Watch 契约](layer1_bridge.md) 验证登记、命中、落盘与读档失效。
-
-## 9. Height control (measured 2026-11-05)
-
-**The unit of `GET /units/{id}.altitude` is feet.** The aircraft ini files say so
-(`StreamingAssets/original/aircraft/usn_f-4j.ini:78  Ceiling=55000.0 // ceiling in feet`,
-`:98  Altitudes=100,1000,3000,6000,10000,20000 // in feet`), and the same file annotates
-`MaxClimbRate=62 // Meters per second` and `WingSpan=11.71 //meters`, so the unit comments
-can be trusted. A freshly launched F-4J reads 64-68 ft while sitting on a flight deck ~20 m
-above the waterline - that is the second confirmation.
-
-**Climb with the preset band, not with an absolute altitude:**
-
-```
-POST /units/{id}/move  {"lat": 31.35483, "lon": 26.80100, "height_state": "High"}
-```
-
-`height_state` is `WaypointHeightState`; a request without it means `NoChange` and asks for
-no band at all (`src/Api.cs:2251`). Measured on an F-4J (35 s settle at 10x, feet):
-
-| height_state | measured | the ini layer it lands on |
-|---|---|---|
-| `Low` | 936 | 1000 |
-| **`High`** | **5,940 - 5,972** | **6000** |
-| `Medium` | 9,961 - 9,971 | 10000 |
-| `Ceiling` | still climbing at 32,689 | 55000 |
-| `VeryLow`, `Cruise`, `VeryHigh` | not settled cleanly (samples caught mid-climb) | - |
-
-So "come in at 6,000 ft" is `height_state:"High"`, and it is exact.
-
-**`op:"altitude"` is experimental and should not be used yet.** It writes
-`_desiredAltitudeToSet` after converting feet to metres, but the read-back
-(`heightInFeet`) comes back null on every call, so the unit of the field was never verified.
-The supported channel is the preset band above; revisit the absolute-altitude op only with a
-readable read-back. (Owner decision, 2026-11-05: use the presets for now.)
-
-**Do not issue an approach while a recovery is running.** `recover` climbs the aircraft to
-its `Ceiling` band first; on 2026-11-05 a pair of F-4J went to 51,776 ft on a queued recall
-and only came down when a fresh `move` replaced the recall. Give the approach order after
-the recovery is finished, or cancel the recall first.
+所有公开路径使用 <SOURCE_ROOT>、<MOD_ROOT>、<SEA_POWER_ROOT>、<PYTHON_EXE> 等占位符。tools/spmcp 为冻结的 legacy；当前维护 tools/spmcp_v2。不把 comms/run 下的凭证、会话或日志作为发行内容。

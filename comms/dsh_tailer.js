@@ -301,6 +301,7 @@ const INJECTED_PATTERNS = [
 
 function isInjected(text) {
   if (!text) return true;
+  if (String(text).trimStart().startsWith('<seapower-notice>')) return true;
   // Leading blank lines and CRLF show up in the transcript; a marker alone on its line, with
   // whitespace around it, is still harness text. A player line that merely mentions an agent
   // keeps its position later in the sentence and still projects.
@@ -322,7 +323,7 @@ function project(evt) {
   const time = evt && evt.time;
   const data = (evt && evt.data) || {};
   if (t === 'user/message') {
-    const text = contentText(data.content).replace(/^<seapower-onceopen>\r?\n[\s\S]*?\r?\n<\/seapower-onceopen>\r?\n\r?\n/, '');
+    const text = contentText(data.content).replace(/^<seapower-(onceopen|persona)>\r?\n[\s\S]*?\r?\n<\/seapower-\1>\r?\n\r?\n/, '');
     // The harness records its own injected context as user/message: the runtime snapshot,
     // the skill-catalogue reminder, and compressed-history summaries. A player line never
     // starts with these, and showing them as speech would misreport who spoke.

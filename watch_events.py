@@ -6,10 +6,9 @@ import json
 import os
 from pathlib import Path
 
+from runtime_layout import deployment_root
 MODULE_DIR = Path(__file__).resolve().parent
-MOD_DIR = MODULE_DIR if MODULE_DIR.name == "dsh-spmcp" else (
-    MODULE_DIR.parents[1] / "Sea Power_Data" / "StreamingAssets" / "dsh-spmcp"
-)
+MOD_DIR = deployment_root()
 OUTBOX = MOD_DIR / "comms" / "outbox.jsonl"
 SCAN_LIMIT = 256 * 1024
 LINE_LIMIT = 64 * 1024

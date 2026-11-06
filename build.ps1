@@ -1,7 +1,7 @@
 # Build SeaPowerAgentBridge.dll with the .NET Framework 4 csc compiler (C# 5 language level).
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File tools\spmcp\build.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\spmcp\build.ps1 -Deploy
+#   powershell -ExecutionPolicy Bypass -File tools\spmcp_v2\build.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\spmcp_v2\build.ps1 -Deploy
 param(
     [switch]$Deploy,
     # Parallel agents build into their own output so two csc runs never fight over the
@@ -128,39 +128,46 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     $deployReadme = $deployReadme.Replace('../comms/DSH.md', 'harness/DSH/README.md').Replace('../comms/CODEX_DEPLOY.md', 'harness/Codex/README.md')
     [IO.File]::WriteAllText((Join-Path $modDir 'README.md'), $deployReadme)
     Copy-Item $stampFile (Join-Path $modDir 'SeaPowerAgentBridge.build') -Force
-    Copy-Item $anchorDll (Join-Path $modDir 'AnchorChain.dll') -Force
+    # AnchorChain is a separately installed loader; reference it for compilation only.
     $ini = Join-Path $here '_info.ini'
     if (Test-Path $ini) { Copy-Item $ini (Join-Path $modDir '_info.ini') -Force }
-    # P-36: the MCP server is half the product, and this script used to deploy only the DLL.
-    # That left a stale mcp_server.py next to a fresh bridge - the exact failure mode that
-    # already produced a 35840-vs-36864 mismatch once. Deploy it and report both sizes.
-    $mcp = Join-Path $here 'mcp_server.py'
-    if (Test-Path $mcp) {
-        Copy-Item $mcp (Join-Path $modDir 'mcp_server.py') -Force
-        Write-Host ("mcp_server.py  {0} bytes" -f (Get-Item $mcp).Length)
-    } else {
-        throw "mcp_server.py is missing from $here - refusing to half-deploy"
-    }
-    Copy-Item (Join-Path $here 'compact_replies.py') (Join-Path $modDir 'compact_replies.py') -Force
-    foreach ($file in 'track_briefs.py','track_mlp_weights.json','track_motion.py','watch_events.py') {
-        Copy-Item (Join-Path $here $file) (Join-Path $modDir $file) -Force
-    }
+    & (Join-Path $here 'deploy_modules.ps1') -ModDir $modDir
     $harnessDir = Join-Path $modDir 'harness'
     $harnessFiles = @{
         'README.md' = 'HARNESS.md'
         'DSH\README.md' = 'DSH.md'
         'DSH\harness_link.js' = 'harness_link.js'
+        'DSH\legacy\ticket_store.js' = 'ticket_store.js'
+        'DSH\legacy\ticket_runtime.js' = 'ticket_runtime.js'
+        'DSH\dsh_ticket_plugin.mjs' = 'dsh_ticket_plugin.mjs'
+        'DSH\dsh_ticket_notifications.mjs' = 'dsh_ticket_notifications.mjs'
         'DSH\dsh_tailer.js' = 'dsh_tailer.js'
         'DSH\prompts\onceopen.md' = 'prompts\onceopen.md'
         'Codex\README.md' = 'CODEX_DEPLOY.md'
         'Codex\codex_link.js' = 'codex_link.js'
-        'Codex\codex_desktop.ps1' = 'codex_desktop.ps1'
-        'Codex\codex.target.example.json' = 'codex.target.example.json'
+        'Codex\codex_chat.py' = 'codex_chat.py'
+        'Codex\prompts\onceopen.md' = 'prompts\onceopen.md'
+        'Codex\legacy\codex_link.js' = 'legacy\codex_link.js'
+        'Codex\legacy\codex_desktop.ps1' = 'codex_desktop.ps1'
+        'Codex\legacy\codex.target.example.json' = 'codex.target.example.json'
     }
     foreach ($entry in $harnessFiles.GetEnumerator()) {
         $destination = Join-Path $harnessDir $entry.Key
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $here ('comms\' + $entry.Value)) -Destination $destination -Force
+    }
+
+    Copy-Item -LiteralPath (Join-Path $here 'doc\deployment_layout.md') -Destination (Join-Path $modDir 'MODULES.md') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_results_ui.md') -Destination (Join-Path $modDir 'harness\TICKET_DETAILS.md') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_notifications.md') -Destination (Join-Path $modDir 'harness\TICKET_NOTIFICATIONS.md') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'doc\main_agent_mode.md') -Destination (Join-Path $modDir 'harness\MAIN_AGENT_MODE.md') -Force
+    $settingsDoc = [IO.File]::ReadAllText((Join-Path $here 'doc\settings_page.md')).Replace('main_agent_mode.md', 'MAIN_AGENT_MODE.md')
+    [IO.File]::WriteAllText((Join-Path $modDir 'harness\SETTINGS.md'), $settingsDoc)
+
+    Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_runtime_plan.md') -Destination (Join-Path $modDir 'harness\DSH\TICKETS.md') -Force
+
+    if (!(Test-Path -LiteralPath (Join-Path $modDir 'persona.md'))) {
+        Copy-Item -LiteralPath (Join-Path $here 'persona.md') -Destination (Join-Path $modDir 'persona.md')
     }
 
     $settings = Join-Path $modDir 'setting.ini'

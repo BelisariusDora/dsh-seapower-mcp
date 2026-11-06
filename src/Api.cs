@@ -151,8 +151,15 @@ namespace SeaPowerAgentBridge
                 long requestId = MiniHttp.CurrentCommandId;
                 // Answered inline: see IsThreadFreeProbe. A hop would turn the one route that can
                 // report a dead pump into a 504, which is indistinguishable from a busy pump.
-                if (string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
-                    && IsThreadFreeProbe(path))
+                // Ticket handlers only touch cached session identity and files. Waiting for
+                // their runtime response on Unity's main thread blocks the runtime's own
+                // /comms/state request and creates a circular wait.
+                string ticketQuery;
+                string[] ticketSegments = SplitPath(path, out ticketQuery);
+                bool ticketRoute = ticketSegments.Length == 1 &&
+                    string.Equals(ticketSegments[0], "tickets", StringComparison.OrdinalIgnoreCase);
+                if (ticketRoute || (string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
+                    && IsThreadFreeProbe(path)))
                     return DispatchOnMain(method, path, body, requestId);
                 object r = Core.OnMainThread(
                     delegate { return DispatchOnMain(method, path, body, requestId); },
@@ -662,6 +669,12 @@ namespace SeaPowerAgentBridge
             // (install, toggle, send, clear). Sending a player line only writes the outbox
             // file - this route must never appear to have delivered anything to the
             // harness, because nothing in the game process can reach the harness HTTP API.
+            if (head == "tickets")
+            {
+                if (isGet) return TicketBridge.State();
+                if (method != "POST") throw MethodNotAllowed(method, path, "GET, POST");
+                return TicketBridge.Submit(ParseBody(body));
+            }
             if (head == "comms")
             {
                 if (seg.Length < 2)
@@ -5447,9 +5460,9 @@ private static bool IsRefused(JToken result)
             if (UiHidden) return;
             try
             {
-                // The console host owns the single hotkey: N opens or collapses the whole
-                // console. Switching tabs is a click on the strip under the top bar, not a
-                // key, so no other key is polled here.
+                // Key capture consumes the frame before the live menu binding is checked.
+                if (SettingsWindow.PollKeyCapture()) return;
+                // The saved menu binding opens or collapses the console. Typing wins.
                 // Two ways out of the text box, both polled rather than routed: Escape and
                 // a left click. Inside Noesis the shell sits between the box and the root
                 // tunnel, and the click that should release the lock never arrives - the
@@ -5476,7 +5489,9 @@ private static bool IsRefused(JToken result)
                 }
 
                 string hit = null;
-                if (UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.N)) hit = "N";
+                string binding = ConsoleHost.ToggleKeyName();
+                UnityEngine.KeyCode bound = (UnityEngine.KeyCode)Enum.Parse(typeof(UnityEngine.KeyCode), binding, true);
+                if (UnityEngine.Input.GetKeyDown(bound)) hit = binding;
                 if (hit == null) return;
                 if (!_keyPollLogged)
                 {

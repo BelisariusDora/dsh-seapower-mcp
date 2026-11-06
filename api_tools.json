@@ -1,0 +1,118 @@
+[
+  {
+    "name": "sp_api_find",
+    "description": "Find existing Sea Power business APIs by short query (Chinese or English) or domain. Returns brief signatures and practical notes; no source/doc reading. Call sp_api_schema for exact selected schemas. Discovery does not execute game commands.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sp_api_schema",
+    "description": "Get exact existing MCP schemas plus important Bridge caveats and short workflows for selected APIs. Always describe selected tools before calling; do not guess arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "names"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sp_api_call",
+    "description": "Worker only: invoke one existing Sea Power API within your mcp_task ticket. Requires private capability. A call_id is an idempotency key: reuse it for the same invocation. An uncertain write is NEVER replayed. Read returned error/status before proceeding. Images are saved as local artifacts for read_image/view_image.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "report_token": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "ticket_id",
+        "report_token",
+        "call_id",
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sp_api_finish",
+    "description": "Worker only: report factual task outcome and end. All calls are checked against host receipts. Never report fulfilled when you only inspected but did not execute the requested order. blocked/needs_input may end without calls, with a concrete reason. Unknown writes remain uncertain. Immediately exit; do not monitor or contact the main agent.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "report_token": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "fulfilled",
+            "partial",
+            "blocked",
+            "needs_input"
+          ],
+          "description": "Task result, separate from API success. Use blocked/needs_input when no authorized action can be taken. fulfilled is a worker claim, not verified battle effects."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Concrete blocker or required clarification; required for blocked/needs_input."
+        }
+      },
+      "required": [
+        "ticket_id",
+        "report_token",
+        "summary",
+        "outcome"
+      ],
+      "additionalProperties": false
+    }
+  }
+]
