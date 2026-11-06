@@ -100,6 +100,7 @@ class Scheduler:
         self.game = game
         self.executor = executor
         self.world = None
+        self.language = "zh"
         self.readable = False
         self.error = None
         self.sample_interval = sample_interval
@@ -122,6 +123,7 @@ class Scheduler:
             if "worldKey" not in state:
                 raise ValueError("Game response lacks world identity")
             self.world = state["worldKey"]
+            self.language = "en" if state.get("uiLanguage")=="en" else "zh"
             self.readable = True
             self.error = None
             return state
@@ -135,7 +137,7 @@ class Scheduler:
         atomic(self.root / "view.json", {
             "at": self.now(), "worldKey": self.world, "available": self.readable and bool(self.world),
             "blockedReason": reason, "lastWorldError": self.error,
-            "runtime": "python-tr1", "tickets": self.store.snapshot(self.world),
+            "runtime": "python-tr1", "tickets": self.store.snapshot(self.world, self.language),
         })
 
     def consume(self):

@@ -63,7 +63,7 @@ namespace SeaPowerAgentBridge
         private static TextBlock _logFooter;
         private static StackPanel _orderPanel;
         private static Border _ticketViewport;
-        private static TextBlock _ticketPageText;
+        private static TextBlock _ticketPageText, _ticketCaption, _ticketPrevious, _ticketNext;
         private static int _ticketPage;
         private static int _ticketPages = 1;
         private static string _expandedTicket = "";
@@ -555,7 +555,8 @@ namespace SeaPowerAgentBridge
             col.RowDefinitions.Add(Row(18));
             col.RowDefinitions.Add(Row(0, true));
             col.RowDefinitions.Add(Row(24));
-            Border cap = Caption("TASK TICKETS");
+            Border cap = Caption(Strings.T("tickets.title"));
+            _ticketCaption = cap.Child as TextBlock;
             Grid.SetRow(cap, 0);
             col.Children.Add(cap);
 
@@ -573,7 +574,8 @@ namespace SeaPowerAgentBridge
             pages.ColumnDefinitions.Add(Col(50));
             pages.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             pages.ColumnDefinitions.Add(Col(50));
-            Border previous = TicketButton("PREV");
+            Border previous = TicketButton(Strings.T("tickets.previous"));
+            _ticketPrevious = previous.Child as TextBlock;
             previous.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
             {
                 e.Handled = true;
@@ -589,7 +591,8 @@ namespace SeaPowerAgentBridge
             };
             Grid.SetColumn(_ticketPageText, 1);
             pages.Children.Add(_ticketPageText);
-            Border next = TicketButton("NEXT");
+            Border next = TicketButton(Strings.T("tickets.next"));
+            _ticketNext = next.Child as TextBlock;
             next.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
             {
                 e.Handled = true;
@@ -1046,6 +1049,7 @@ namespace SeaPowerAgentBridge
             sig = (sig ^ _scrollBack) * 1099511628211L;
             sig = (sig ^ _armed.GetHashCode()) * 1099511628211L;
             for (int i = 0; i < _status.Length; i++) sig = (sig ^ _status[i]) * 1099511628211L;
+            sig = (sig ^ Strings.CurrentLanguage.GetHashCode()) * 1099511628211L;
             sig = (sig ^ _target.GetHashCode()) * 1099511628211L;
             if (_armed && _input != null)
                 sig = (sig ^ (Convert.ToString(_input.Text) ?? "").GetHashCode()) * 1099511628211L;
@@ -1420,6 +1424,9 @@ namespace SeaPowerAgentBridge
         private static void PaintOrder(JArray tickets)
         {
             if (_orderPanel == null) return;
+            if (_ticketCaption != null) _ticketCaption.Text = Strings.T("tickets.title");
+            if (_ticketPrevious != null) _ticketPrevious.Text = Strings.T("tickets.previous");
+            if (_ticketNext != null) _ticketNext.Text = Strings.T("tickets.next");
             _orderPanel.Children.Clear();
             if (_expandedTicket.Length > 0)
             {
@@ -1434,8 +1441,8 @@ namespace SeaPowerAgentBridge
             {
                 _ticketPage = 0;
                 _ticketPages = 1;
-                _orderPanel.Children.Add(Field("", "本局暂无工单", Color.FromArgb(255, 150, 185, 210)));
-                if (_ticketPageText != null) _ticketPageText.Text = "0 tickets";
+                _orderPanel.Children.Add(Field("", Strings.T("tickets.empty"), Color.FromArgb(255, 150, 185, 210)));
+                if (_ticketPageText != null) _ticketPageText.Text = Strings.T("tickets.zero");
                 return;
             }
             double height = _ticketViewport == null ? 0 : (double)_ticketViewport.ActualHeight;
@@ -1467,7 +1474,7 @@ namespace SeaPowerAgentBridge
                 Grid actions = new Grid();
                 actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                Border expand = TicketButton("显示详情");
+                Border expand = TicketButton(Strings.T("tickets.expand"));
                 expand.Margin = new Thickness(0, 0, 4, 0);
                 expand.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
                 {
@@ -1491,7 +1498,7 @@ namespace SeaPowerAgentBridge
         private static Border TicketDestroyButton(JObject ticket)
         {
             string id = AsStr(ticket["id"]);
-            Border destroy = TicketButton("DESTROY");
+            Border destroy = TicketButton(Strings.T("tickets.destroy"));
             destroy.IsEnabled = (bool?)ticket["canDestroy"] == true;
             destroy.Opacity = destroy.IsEnabled ? 1.0f : 0.45f;
             destroy.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
@@ -1506,7 +1513,7 @@ namespace SeaPowerAgentBridge
         {
             // Use the proven Border/StackPanel path, with full-text pages rather than
             // a ScrollViewer template unavailable in this game's Noesis resources.
-            Border back = TicketButton("收起详情 / 返回列表");
+            Border back = TicketButton(Strings.T("tickets.collapse"));
             back.Height = 26;
             back.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
             {
@@ -1520,7 +1527,7 @@ namespace SeaPowerAgentBridge
             destroy.Height = 24;
             destroy.Margin = new Thickness(0, 4, 0, 8);
             _orderPanel.Children.Add(destroy);
-            string text = "任务：" + AsStr(ticket["title"]) + "\n\n" + AsStr(ticket["detailText"]);
+            string text = Strings.T("tickets.task") + AsStr(ticket["title"]) + "\n\n" + AsStr(ticket["detailText"]);
             if (AsStr(ticket["detailText"]).Length == 0) text += AsStr(ticket["detail"]);
             double width = _ticketViewport == null ? 220 : (double)_ticketViewport.ActualWidth;
             double usable = Math.Max(40, width - 12);
@@ -1554,7 +1561,7 @@ namespace SeaPowerAgentBridge
                 _orderPanel.Children.Add(row);
             }
             _orderPanel.Children.Add(new Border { Height = 8 });
-            if (_ticketPageText != null) _ticketPageText.Text = "详情 " + (_ticketDetailPage + 1) + "/" + _ticketDetailPages;
+            if (_ticketPageText != null) _ticketPageText.Text = Strings.T("tickets.details") + (_ticketDetailPage + 1) + "/" + _ticketDetailPages;
         }
 
         private static string TicketText(string value, int limit)
@@ -1569,11 +1576,11 @@ namespace SeaPowerAgentBridge
             {
                 JObject result = TicketBridge.Destroy(id);
                 bool queued = result != null && ((bool?)result["queued"] == true || (bool?)result["ok"] == true);
-                _status = queued ? "ticket destroy requested" : "ticket destroy failed";
+                _status = queued ? Strings.T("tickets.destroyRequested") : Strings.T("tickets.destroyFailed");
             }
             catch (Exception ex)
             {
-                _status = "ticket destroy failed";
+                _status = Strings.T("tickets.destroyFailed");
                 Core.Log("ticket destroy: " + ex.Message);
             }
             Refresh(true);

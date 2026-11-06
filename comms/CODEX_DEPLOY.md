@@ -1,42 +1,42 @@
-# Codex 游戏会话
+# Codex 接入：当前部署说明
 
-> Alpha 1.0：默认 Worker 模式沿用下述建单后结束/独立执行流程。Settings 开启“仅使用主 Agent 操作”后，仍建单，由创建工单的主会话同轮调用 sp_main_api_call/finish，不派 Worker；回执 executionMode 决定执行方式。STOP 同时收束该主轮次的活动任务，未知写入不重发。详见源码 doc/main_agent_mode.md，安装包 harness/MAIN_AGENT_MODE.md。早期 TR 状态属于历史记录。
+首次部署读 `<MOD_ROOT>/README.md` 第 1、2、4、6、7 节即可启动。此路径不要求 DSH 或 Node.js。
 
-Codex 与 DSH 一样使用每局独立的游戏会话。第一条玩家消息创建临时 app-server thread；同局后续消息复用它，退出或切换对局会中断并关闭旧会话，旧回复不进入新局。不绑定、不读取当前桌面聊天，也不恢复上次进程的聊天记录。
+## 进程和 CLI 来源
 
-需要 Python 3.11+、PATH 中可用且已登录的 Codex CLI（`codex app-server --stdio`）。沿用本机 Codex 的账号和默认模型配置。Node.js 仅用于兼容启动入口，直接运行 Python 时不需要 Node.js。
+- 主聊天：`harness/Codex/codex_chat.py`，独立持有 ephemeral app-server thread。
+- 后台 Worker：`harness/Codex/ticket_executor_codex.py`，由共享调度器启动、持有和停止，不能假设 Codex 原生子代理自动脱离主轮次运行。
+- 调度器：根 ticket_scheduler.py 兼容入口，实际实现位于 modules/tickets；两个通道共用一个实例。
+- 主 chat 可通过 --codex 传 CLI 路径；Worker 从调度器的 PATH 定位 codex。只配置 chat 的 --codex 不足以配置 Worker。
 
-在部署目录启动独立聊天转发器：
-
-```powershell
-& "<PYTHON_EXE>" "<MOD_ROOT>/harness/Codex/codex_chat.py" --out "<MOD_ROOT>/comms" --game-world
-```
-
-或使用兼容 Node 入口：
+按根 README 初始化变量。启动调度器前把 `$Codex` 所在目录加入该进程环境：
 
 ```powershell
-node "<MOD_ROOT>/harness/Codex/codex_link.js" --python "<PYTHON_EXE>" --out "<MOD_ROOT>/comms" --game-world
+$env:PATH = (Split-Path -Parent $Codex) + ';' + $env:PATH
+Get-Command codex
+& $Python (Join-Path $ModRoot 'ticket_scheduler.py') --out (Join-Path $ModRoot 'comms') --executor codex
 ```
 
-若 CLI 不在 PATH，给 Python 入口增加 `--codex "<CODEX_EXE>"`。一个 comms 目录只启动一个 Codex 聊天转发器。DSH 收发脚本可同时运行，各消费自己的出站队列。
-
-游戏面板 Target 选 Codex 后直接收发。`persona.md` 每条消息重读；首句另外隐藏注入本目录 `prompts/onceopen.md`，游戏只显示玩家原文。主会话只聊天、澄清和建单，不直接执行业务命令。
-
-另需启动一个共享工单调度器：
+另一个独立常驻进程：
 
 ```powershell
-& "<PYTHON_EXE>" "<MOD_ROOT>/ticket_scheduler.py" --out "<MOD_ROOT>/comms" --executor dsh
+& $Python (Join-Path $ModRoot 'harness\Codex\codex_chat.py') --out (Join-Path $ModRoot 'comms') --game-world --codex $Codex
 ```
 
-这里 `--executor` 只决定没有显式选择后端的请求的默认值。游戏 Codex 主会话创建的任务由宿主强制绑定 Codex Worker；DSH 沿用默认 DSH。两边共用一个调度器、资源锁和串行执行槽，不要各启动一个调度器。已创建任务独立于主会话继续运行，玩家用 DESTROY 隐藏并取消任务；STOP 仅中断正在回复的 Codex 主会话，不撤销已经提交的游戏命令或已受理任务。
+若已有共享调度器，不再启动第二个。--executor 只决定未明确选择后端的默认值；游戏 Codex 建单由宿主绑定 Codex。Node 兼容 codex_link.js 内部仍运行同一个 chat，不能与 Python 入口并开。
 
-STOP 请求含会话、轮次、对局标识与 5 秒时效；中断后不显示该轮的部分回复和迟到回复。主会话只提供建单/查询等小型动态工具，不继承其他 MCP、shell、原生多 Agent 或外部审批能力。执行 Worker 继续使用现有受控 API 工具。
+## 会话、权限和停止
 
-运行数据均在 `<MOD_ROOT>/comms`：`codex.outbox.jsonl` 为出站队列，`run/codex.chat.json` 为游戏读取的当前快照，`run/codex.cursor.json` 为已取消息游标，`run/codex.stop.json` 为一次中断请求，`run/codex.chat.lock` 防止重复启动。新安装从已有队列末尾开始；未知投递结果不自动重发，避免重复下令。新局/重启不恢复旧聊天；这些运行文件不是跨存档记忆，不打包发布。
+第一条本局输入才新建临时 thread，同局复用、切局关闭、进程重启不恢复旧聊天。不读取桌面前台聊天，不保证临时 thread 出现在桌面会话列表。账号、模型和 CLI 登录由本机正常配置提供，本项目不提供账号代理服务。
 
-旧桌面 UI 投递代码保留在 `legacy/`，仅作历史参考；`codex.target.json`、桌面标题、前台识别及 `--thread`/`--chat-title` 不参与新入口。
+默认 Worker 模式：主 Agent 建单确认后结束，后台 Worker 独立执行。仅主 Agent 模式：仍建单，由同一主轮次用 sp_main_api_call/finish 执行；不创建 Worker。都复用调用账本、HOLD、范围、预算和世界边界。
 
-验证：15 项聊天/路由回归及真实 app-server 的同局复用、建单绑定、中断、换局隔离测试通过，原有 40 项工单回归通过。游戏内验收见文末记录。
+STOP 校验当前会话、轮次、世界和请求时效，中断后抑制该轮的部分/迟到回复。Worker 模式取消具体后台任务用 DESTROY；主模式 STOP 同时收束本轮活动任务。已提交的游戏命令不能撤回，未知写入不自动重放。
 
+主会话只得到有限动态工具，不继承 shell、其他 MCP 或原生多 Agent 能力。异常通知轮次宿主拒绝全部工具，只允许文字报告，不自动续建任务。
 
-游戏 mcptest 实测（2026-11-06）：Codex 出站消息得到唯一测试串回复，Bridge 的 codex 通道与游戏面板显示一致；主会话建单后结束，独立 Codex Worker 只读调用一次 sp_session_fleet，记录 executed、resultVerified=false 并退出。实际点击游戏 STOP 按钮，从流式回复恢复 IDLE，该轮部分/迟到回复不再显示。未下达单位、武器、起飞、绘图或时间命令。跨 world 的新会话与旧进程关闭已在真实 app-server 隔离测试验证，游戏内切局尚未另做人工验收。
+## 证据与验收
+
+读 comms/run/codex.chat.json 检查 link、generation、worldKey；读 comms/run/tickets/view.json 和 api_calls 核对执行，原始凭据与记录不公开。仅普通聊天成功不代表 Worker 能启动，必须增加一次有明确边界的编成只读任务。
+
+首句 prompts/onceopen.md 隐藏注入，模型回复语言跟随玩家输入；persona.md 每句重读。旧桌面投递脚本位于 legacy，当前模式不用 --thread、--chat-title 或 codex.target.json。

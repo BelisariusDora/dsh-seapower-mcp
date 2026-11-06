@@ -29,11 +29,13 @@
 
 | 专题 | 归属及说明 |
 |---|---|
+| [当前部署工单契约](tickets_deployment.md) | 第三层；安装包 TICKETS.md 的来源，与历史 TR 过程分开 |
 | [工单运行时与 TR 历史](ticket_runtime_plan.md) | 第三层；历史里程碑不等于当前全部能力 |
 | [仅主 Agent 模式](main_agent_mode.md) | 第三层执行模式；第四层 Settings 提供默认关闭的开关 |
 | [异常通知闭环](ticket_notifications.md) | 第三层决定投递、去重和权限；第四层显示主 Agent 的文字转述 |
 | [工单结果与详情](ticket_results_ui.md) | 第三层生成账本视图；第四层卡片、展开和分页 |
 | [Settings 与菜单键位](settings_page.md) | 第四层草稿、保存和语言；各配置消费者在对应层生效 |
+| [语言文件与本地化](localization.md) | 第四层语言选择与外部 INI，第三层复用同一语言生成工单视图 |
 | [模块化部署](deployment_layout.md) | 跨层物理目录与兼容入口 |
 
 ## 当前能力与验证边界

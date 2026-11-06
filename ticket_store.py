@@ -78,12 +78,12 @@ class TicketStore:
     def get(self, ticket_id):
         return copy.deepcopy(self.tickets.get(ticket_id))
 
-    def snapshot(self, world):
+    def snapshot(self, world, language="zh"):
         keys = ("id", "title", "status", "workerStatus", "detail", "revision", "worldKey",
                 "createdAt", "updatedAt", "deadlineAt", "resultVerified", "legacy", "verification", "callCount", "executionMode")
         from ticket_presentation import cached
         from ticket_notifications import presentation
-        return [{**{k: t[k] for k in keys if k in t}, **cached(t, self.file.parent, self._presentation_cache), "notificationState": presentation(self.file.parent, t["id"]), "canDestroy": True}
+        return [{**{k: t[k] for k in keys if k in t}, **cached(t, self.file.parent, self._presentation_cache, language), "notificationState": presentation(self.file.parent, t["id"]), "canDestroy": True}
                 for t in self.all() if t["worldKey"] == world and not t["hidden"]]
 
     def apply(self, command, world, context=None, main_only=False):

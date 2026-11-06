@@ -8,7 +8,7 @@
 
 **Connect Sea Power's battlefield state and command controls to MCP.** An in-game bridge plugin and a Python adapter let MCP clients inspect units, formations, weapons, and flight decks, then issue navigation, aviation, and engagement orders.
 
-[下载 / Download Alpha 1.0](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v1.0.0-alpha) · [桥接文档 / Bridge docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
+[下载 / Download Alpha 1.1](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v1.1.0-alpha) · [完整部署指南 / Deployment guide](doc/DEPLOY.md) · [四层文档 / Architecture docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
 
 ## 当前 AI 能力 / What AI can do today
 
@@ -73,27 +73,29 @@ Alpha 的直连工具可以读取原始游戏状态并下达指令。Watch 的 M
 
 The Alpha tools can read raw game state and issue orders directly. Some MCP Watch parameters differ from the current bridge contract. See the [MCP adapter notes](doc/layer2_translation.md).
 
+## Alpha 1.1 更新 / Changes
+
+- **工单本地化 / Ticket localization**：固定卡片、状态、按钮和详情文本读取 `language_cn/ui.ini`、`language_en/ui.ini`，跟随界面语言；升级只补缺键。任务标题与 Agent 原始回报保留原文。<br>Ticket labels, states, buttons, and details use external language files and follow the UI language. Upgrades preserve custom entries. Agent-generated titles and reports retain their original language.
+- **回复语言 / Reply language**：首轮隐藏提示要求按玩家输入语言回复，新会话首句起生效。<br>The first-turn prompt asks the assistant to reply in the player's input language, starting with a new session.
+- **部署说明 / Deployment instructions**：包内根 README 覆盖仅 MCP、DSH、Codex 和双后端部署，包含依赖、启动、只读验收和排错；修复 PowerShell 5.1 部署文档的 UTF-8 乱码。<br>The package README covers MCP-only, DSH, Codex, and dual-backend setup, dependencies, startup, read-only checks, and troubleshooting. PowerShell 5.1 deployment now preserves UTF-8 documentation.
+
+本版仍为 **Alpha**。为提供 GitHub **Latest** 下载入口，Release 未使用平台的 Pre-release 标志，这不代表稳定版验收完成。AnchorChain 独立安装；发行包不携带其 DLL、凭据、会话或运行日志。<br>This remains an **Alpha** release. The GitHub Pre-release flag is unset so it can be marked **Latest**; this does not imply stable-release acceptance. Install AnchorChain separately. Its DLL, credentials, sessions, and runtime logs are excluded from the package.
+
 ## 架构 / Architecture
 
-| 层 / Layer | 职责 / Responsibility | 进度 / Status |
+| 层 / Layer | 职责 / Responsibility | 文档 / Docs |
 |---|---|---|
-| **1 · 游戏桥接 / Game bridge** | AnchorChain 加载 C# 插件，在 Unity 主线程访问游戏对象，通过本机 HTTP 提供原始状态、命令回执和临时触发器。<br>AnchorChain loads the C# plugin. It accesses game objects on Unity's main thread and exposes raw state, command receipts, and temporary triggers over local HTTP. | 已随 Alpha 提供<br>Available in Alpha |
-| **2 · MCP 转译 / MCP adapter** | Python 服务通过 stdio 接收工具调用，转换参数并请求本机 Bridge，保留拒绝、执行结果不确定和部分成功等回执。<br>The Python service translates MCP tool calls over stdio into local bridge requests and preserves refusals, uncertain outcomes, and partial success. | 已随 Alpha 提供，Watch 映射待同步<br>Available in Alpha, with Watch mappings pending alignment |
-| **3 · 交互运行时 / Interaction runtime** | 关联玩家任务、命令和完成条件，消费触发事件，处理结单、超时询问和取消。<br>Links player tasks to commands and completion conditions, consumes trigger events, and handles completion, timeout prompts, and cancellation. | 规划中<br>Planned |
+| **1 · 接口层 / Game bridge** | AnchorChain 加载 C# 插件，在 Unity 主线程读取游戏真值、提交命令，提供 HOLD 和原生 Watch。<br>The C# plugin reads game state and submits commands on Unity's main thread, with HOLD and native Watch support. | [第一层 / Layer 1](doc/layer1_bridge.md) |
+| **2 · 转译层 / MCP adapter** | Python 提供 stdio MCP、HTTP 参数和回执转译、字段投影与 MLP。<br>Python exposes stdio MCP, translates HTTP parameters and receipts, and provides field projection and MLP. | [第二层 / Layer 2](doc/layer2_translation.md) |
+| **3 · Harness 调度层 / Harness scheduling** | DSH/Codex 本局主会话、工单生命周期、Worker 或仅主 Agent 执行、调用账本和异常回报。<br>Manages per-game DSH/Codex main sessions, tickets, Worker or main-agent-only execution, call evidence, and problem reports. | [第三层 / Layer 3](doc/layer3_workflow.md) |
+| **4 · 人机交互层 / Player interaction** | 游戏内通联、工单展开详情、STOP/销毁、Settings、菜单键位、本地化及 persona。<br>Provides in-game chat, ticket details, STOP/destroy controls, Settings, menu key binding, localization, and persona presentation. | [第四层 / Layer 4](doc/layer4_interaction.md) |
 
-MCP 客户端通过 Python 转译器访问游戏桥接。桥接产生的 Watch 事件写入本地 outbox，供未来的 UI 交互运行时消费。
+直接 MCP 接入只需前两层；游戏内交互需要另行配置 Harness 与工单调度器，不能只启动 MCP 后等待其自动运行。DSH 使用原生插件接入，Codex 使用独立 CLI 会话；两端均有本局独立主会话和 Worker 执行路径。Settings 的“仅主 Agent”默认关闭，开启后仍生成工单，但由主 Agent 负责交互。<br>Direct MCP use requires the first two layers. In-game interaction also requires the Harness and ticket scheduler described in the deployment guide. DSH uses its native plugin, while Codex uses independent CLI sessions. Both support per-game main sessions and Worker execution. Main-agent-only mode is off by default; enabling it retains tickets while assigning interactions to the main Agent.
 
-MCP clients reach the game bridge through the Python adapter. The bridge writes Watch events to a local outbox for the planned UI interaction runtime.
+## 当前边界与后续工作 / Limits and next steps
 
-## 路线图 / Roadmap
+- `executed` 只表示接口调用获得执行回执，不代表战果确认。通用 Watch 事件读取与证据展示已有，通用 Watch 自动结单尚未接通。<br>`executed` means API calls received execution receipts; it does not confirm combat effects. Watch event reading and evidence display exist, but generic Watch-based automatic completion is not connected yet.
+- 工单固定文本已接入语言文件，部分其他通联静态文本仍需完善；动态回报语言由 Harness 和提示词控制。<br>Ticket labels use language files; some other static chat text still needs localization. Harness configuration and prompts govern generated replies.
+- 部署步骤及验收范围见 [部署指南](doc/DEPLOY.md)、[当前工单契约](doc/tickets_deployment.md)、[本地化说明](doc/localization.md)。历史 TR 文档保留施工过程，不能替代当前部署步骤。<br>See the [deployment guide](doc/DEPLOY.md), [current ticket contract](doc/tickets_deployment.md), and [localization notes](doc/localization.md). Historical TR documents describe development milestones rather than current startup instructions.
 
-- **Roleplay 支持 / Roleplay support**<br>
-  让 AI 扮演舰队参谋或指挥角色，结合当前战场状态提供符合角色的简报、建议和指令。<br>
-  Let the AI act as a fleet staff officer or commander, using the current battle state to provide in-character briefings, recommendations, and orders.
-- **UI 交互闭环 / In-game UI workflow**<br>
-  在游戏内提交请求、确认行动、查看执行结果与接收触发提醒。等待和完成判定由运行时代码处理。<br>
-  Submit requests, confirm actions, view results, and receive trigger alerts in-game. The runtime handles waiting and completion checks.
-
-开发细节见 [第一层桥接](doc/README.md)、[原生触发器](doc/layer1_bridge.md) 和 [第二层转译](doc/layer2_translation.md)。本项目采用 [MIT 许可证](LICENSE)。
-
-For implementation details, see the [game bridge](doc/README.md), [native triggers](doc/layer1_bridge.md), and [MCP adapter](doc/layer2_translation.md). The project is licensed under the [MIT License](LICENSE).
+项目采用 [MIT 许可证 / MIT License](LICENSE)。

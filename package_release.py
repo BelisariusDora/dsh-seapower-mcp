@@ -14,9 +14,9 @@ def package(output,version):
   'ticket_runtime.js':'DSH/legacy/ticket_runtime.js','ticket_store.js':'DSH/legacy/ticket_store.js',
   'legacy/codex_link.js':'Codex/legacy/codex_link.js','legacy/codex_desktop.ps1':'Codex/legacy/codex_desktop.ps1',
   'legacy/codex.target.example.json':'Codex/legacy/codex.target.example.json'}
- docs={'deployment_layout.md':'MODULES.md','ticket_runtime_plan.md':'harness/DSH/TICKETS.md',
+ docs={'deployment_layout.md':'MODULES.md','tickets_deployment.md':'harness/DSH/TICKETS.md',
   'ticket_results_ui.md':'harness/TICKET_DETAILS.md','ticket_notifications.md':'harness/TICKET_NOTIFICATIONS.md',
-  'settings_page.md':'harness/SETTINGS.md','main_agent_mode.md':'harness/MAIN_AGENT_MODE.md','DEPLOY.md':'README.md'}
+  'localization.md':'harness/LOCALIZATION.md','settings_page.md':'harness/SETTINGS.md','main_agent_mode.md':'harness/MAIN_AGENT_MODE.md','DEPLOY.md':'README.md'}
  identities={**mapping,**{'comms/'+s:'harness/'+d for s,d in harness.items()}}
  identities.update({'doc/'+p.name:'docs/'+p.name for p in (root/'doc').glob('*.md')})
  def render(source,destination):
@@ -68,4 +68,4 @@ def package(output,version):
   print(json.dumps({'archive':str(archive),'sha256':digest(archive),'files':len(files)+1,'sourceCommit':commit}))
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',default='dist');parser.add_argument('--version',default='1.0.0-alpha');a=parser.parse_args();package(a.output,a.version)
+ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',default='dist');parser.add_argument('--version',default='1.1.0-alpha');a=parser.parse_args();package(a.output,a.version)

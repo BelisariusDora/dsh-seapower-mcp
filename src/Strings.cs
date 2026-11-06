@@ -140,6 +140,30 @@ namespace SeaPowerAgentBridge
             Define(BuiltinZh, "settings.compact", "精简 MCP 回复");
             Define(BuiltinEn, "settings.compact.note", "Reduce fields in large state replies. Takes effect on the next query.");
             Define(BuiltinZh, "settings.compact.note", "减少大型态势回复的字段，从下次查询生效。");
+            Define(BuiltinEn, "tickets.title", "TASK TICKETS");
+            Define(BuiltinZh, "tickets.title", "任务工单");
+            Define(BuiltinEn, "tickets.previous", "PREV");
+            Define(BuiltinZh, "tickets.previous", "上一页");
+            Define(BuiltinEn, "tickets.next", "NEXT");
+            Define(BuiltinZh, "tickets.next", "下一页");
+            Define(BuiltinEn, "tickets.empty", "No tickets in this mission");
+            Define(BuiltinZh, "tickets.empty", "本局暂无工单");
+            Define(BuiltinEn, "tickets.zero", "0 tickets");
+            Define(BuiltinZh, "tickets.zero", "0 项工单");
+            Define(BuiltinEn, "tickets.expand", "Show details");
+            Define(BuiltinZh, "tickets.expand", "显示详情");
+            Define(BuiltinEn, "tickets.destroy", "DESTROY");
+            Define(BuiltinZh, "tickets.destroy", "销毁");
+            Define(BuiltinEn, "tickets.collapse", "Collapse / back to list");
+            Define(BuiltinZh, "tickets.collapse", "收起详情 / 返回列表");
+            Define(BuiltinEn, "tickets.task", "Task: ");
+            Define(BuiltinZh, "tickets.task", "任务：");
+            Define(BuiltinEn, "tickets.details", "Details ");
+            Define(BuiltinZh, "tickets.details", "详情 ");
+            Define(BuiltinEn, "tickets.destroyRequested", "Ticket cancellation requested");
+            Define(BuiltinZh, "tickets.destroyRequested", "已请求销毁工单");
+            Define(BuiltinEn, "tickets.destroyFailed", "Ticket cancellation failed");
+            Define(BuiltinZh, "tickets.destroyFailed", "工单销毁失败");
             Define(BuiltinEn, "settings.mainOnly", "Use main agent only");
             Define(BuiltinZh, "settings.mainOnly", "仅使用主 Agent 操作");
             Define(BuiltinEn, "settings.mainOnly.note", "New tickets run in the main turn, without workers. May improve results but require more thinking time. Off by default.");
@@ -178,6 +202,8 @@ namespace SeaPowerAgentBridge
         }
 
         // ---------------------------------------------------------------- lookups
+
+        internal static string CurrentLanguage { get { return _lang; } }
 
         internal static string T(string key)
         {

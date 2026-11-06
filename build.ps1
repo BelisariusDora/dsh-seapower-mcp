@@ -124,7 +124,7 @@ if ($Deploy) {
 $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     if (-not (Test-Path $modDir)) { New-Item -ItemType Directory -Path $modDir -Force | Out-Null }
     Copy-Item $outDll (Join-Path $modDir 'SeaPowerAgentBridge.dll') -Force
-    $deployReadme = Get-Content -LiteralPath (Join-Path $here 'doc\DEPLOY.md') -Raw
+    $deployReadme = [IO.File]::ReadAllText((Join-Path $here 'doc\DEPLOY.md'), [Text.Encoding]::UTF8)
     $deployReadme = $deployReadme.Replace('../comms/DSH.md', 'harness/DSH/README.md').Replace('../comms/CODEX_DEPLOY.md', 'harness/Codex/README.md')
     [IO.File]::WriteAllText((Join-Path $modDir 'README.md'), $deployReadme)
     Copy-Item $stampFile (Join-Path $modDir 'SeaPowerAgentBridge.build') -Force
@@ -160,20 +160,65 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     Copy-Item -LiteralPath (Join-Path $here 'doc\deployment_layout.md') -Destination (Join-Path $modDir 'MODULES.md') -Force
     Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_results_ui.md') -Destination (Join-Path $modDir 'harness\TICKET_DETAILS.md') -Force
     Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_notifications.md') -Destination (Join-Path $modDir 'harness\TICKET_NOTIFICATIONS.md') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'doc\localization.md') -Destination (Join-Path $modDir 'harness\LOCALIZATION.md') -Force
     Copy-Item -LiteralPath (Join-Path $here 'doc\main_agent_mode.md') -Destination (Join-Path $modDir 'harness\MAIN_AGENT_MODE.md') -Force
     $settingsDoc = [IO.File]::ReadAllText((Join-Path $here 'doc\settings_page.md')).Replace('main_agent_mode.md', 'MAIN_AGENT_MODE.md')
     [IO.File]::WriteAllText((Join-Path $modDir 'harness\SETTINGS.md'), $settingsDoc)
 
-    Copy-Item -LiteralPath (Join-Path $here 'doc\ticket_runtime_plan.md') -Destination (Join-Path $modDir 'harness\DSH\TICKETS.md') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'doc\tickets_deployment.md') -Destination (Join-Path $modDir 'harness\DSH\TICKETS.md') -Force
 
     if (!(Test-Path -LiteralPath (Join-Path $modDir 'persona.md'))) {
         Copy-Item -LiteralPath (Join-Path $here 'persona.md') -Destination (Join-Path $modDir 'persona.md')
+    }
+
+    foreach ($folder in @('language_en', 'language_cn')) {
+        $target = Join-Path $modDir ($folder + '\ui.ini')
+        $defaults = Join-Path $here ('deployment\assets\' + $folder + '\ui.ini')
+        $text = if (Test-Path -LiteralPath $target) { [IO.File]::ReadAllText($target) } else { "[AgentInspector]`n" }
+        $present = @{}
+        foreach ($line in ($text -split "`r?`n")) {
+            if ($line -match '^\s*([^;#][^=]*?)\s*=') { $present[$matches[1].Trim()] = $true }
+        }
+        $added = @()
+        foreach ($line in [IO.File]::ReadAllLines($defaults)) {
+            if ($line -match '^\s*([^;#][^=]*?)\s*=') {
+                $key = $matches[1].Trim()
+                if (-not $present.ContainsKey($key)) { $added += $line; $present[$key] = $true }
+            }
+        }
+        if ($added.Count -gt 0) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            [IO.File]::WriteAllText($target, $text.TrimEnd() + "`n`n[AgentInspector]`n" + ($added -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+        }
     }
 
     $settings = Join-Path $modDir 'setting.ini'
     if (!(Test-Path -LiteralPath $settings)) {
         [IO.File]::WriteAllText($settings, "[MCP]`r`nCompactReplies=false`r`n")
     }
+    $docFolder=Join-Path $modDir 'docs'
+    New-Item -ItemType Directory -Path $docFolder -Force | Out-Null
+    $moduleDocs=Get-Content -LiteralPath (Join-Path $here 'deployment\modules.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach($document in Get-ChildItem -LiteralPath (Join-Path $here 'doc') -File -Filter '*.md') {
+        $body=[IO.File]::ReadAllText($document.FullName,[Text.Encoding]::UTF8)
+        foreach($entry in $moduleDocs.PSObject.Properties) {
+            $body=$body.Replace('(../'+$entry.Name+')','(../'+$entry.Value+')')
+        }
+        $body=$body.Replace('(../comms/DSH.md)','(../harness/DSH/README.md)').Replace('(../comms/CODEX_DEPLOY.md)','(../harness/Codex/README.md)')
+        [IO.File]::WriteAllText((Join-Path $docFolder $document.Name),$body,(New-Object Text.UTF8Encoding($false)))
+    }
+    # Rebase source-doc links in the installed topical copies, without touching user files.
+    foreach($relative in @('MODULES.md','harness\TICKET_DETAILS.md','harness\TICKET_NOTIFICATIONS.md','harness\SETTINGS.md','harness\MAIN_AGENT_MODE.md','harness\LOCALIZATION.md')) {
+        $target=Join-Path $modDir $relative
+        if(-not (Test-Path -LiteralPath $target)){continue}
+        $body=[IO.File]::ReadAllText($target,[Text.Encoding]::UTF8)
+        $prefix=if($relative.StartsWith('harness\')){'../docs/'}else{'docs/'}
+        foreach($document in Get-ChildItem -LiteralPath (Join-Path $here 'doc') -File -Filter '*.md') {
+            $body=$body.Replace('('+$document.Name+')','('+$prefix+$document.Name+')')
+        }
+        [IO.File]::WriteAllText($target,$body,(New-Object Text.UTF8Encoding($false)))
+    }
+
     $startScript = Join-Path $here 'start_game.ps1'
     if (Test-Path $startScript) { Copy-Item $startScript (Join-Path $modDir 'start_game.ps1') -Force }
     # Read the destination back. A "deployed" line that was not verified is how a running

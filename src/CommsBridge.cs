@@ -982,6 +982,7 @@ namespace SeaPowerAgentBridge
                 if (_tailerNote.Length > 0) o["linkNote"] = _tailerNote;
                 o["sessionId"] = _sessionId;
                 o["workspaceSlug"] = _sessionSlug;
+                o["uiLanguage"] = Strings.CurrentLanguage;
                 o["agentName"] = _agentName;
                 o["agentCall"] = _agentCall;
                 o["items"] = _items.Count;
