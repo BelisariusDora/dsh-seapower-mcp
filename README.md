@@ -92,6 +92,28 @@ The Alpha tools can read raw game state and issue orders directly. Some MCP Watc
 
 直接 MCP 接入只需前两层；游戏内交互需要另行配置 Harness 与工单调度器，不能只启动 MCP 后等待其自动运行。DSH 使用原生插件接入，Codex 使用独立 CLI 会话；两端均有本局独立主会话和 Worker 执行路径。Settings 的“仅主 Agent”默认关闭，开启后仍生成工单，但由主 Agent 负责交互。<br>Direct MCP use requires the first two layers. In-game interaction also requires the Harness and ticket scheduler described in the deployment guide. DSH uses its native plugin, while Codex uses independent CLI sessions. Both support per-game main sessions and Worker execution. Main-agent-only mode is off by default; enabling it retains tickets while assigning interactions to the main Agent.
 
+### 架构图 / Architecture diagrams
+
+以下为 Alpha 1.1 的逻辑结构；模块框不一定是独立进程。点击图片可查看原图，[Mermaid 源文件及重绘方法](doc/diagrams/README.md)随仓库保存。<br>These diagrams describe the Alpha 1.1 logical architecture, not a one-process-per-box deployment. Click an image to view it in full; [Mermaid sources and rendering instructions](doc/diagrams/README.md) are included.
+
+**第二层 · MCP 转译 / Layer 2 · MCP adapter**
+
+![第二层 MCP 转译层架构：工具注册、HTTP 回执、字段投影、航迹简报与 Watch 事件](doc/diagrams/layer2-mcp.png)
+
+字段投影减少模型侧回包；MLP 只排序简报候选，不判定身份或交战条件。<br>Projection reduces model-facing responses. The MLP ranks briefing candidates; it does not decide identity or engagement eligibility.
+
+**第三层 · Harness 调度 / Layer 3 · Harness scheduling**
+
+![第三层 Harness 调度层架构：主会话、工单、独立 Worker、主模式、证据和异常通知](doc/diagrams/layer3-harness.png)
+
+独立 Worker 由 Adapter / 宿主持有；主轮次结束后仍可运行。仅主 Agent 模式保留工单，但不创建 Worker。<br>The Adapter / host owns independent Workers, which can continue after the main turn ends. Main-agent-only mode retains tickets without starting a Worker.
+
+**人机交互时序 / Player interaction sequence**
+
+![玩家输入、两种执行模式、真值监视、问题通知、STOP 与工单销毁的时序图](doc/diagrams/player-interaction.png)
+
+API 回执、工单结果与游戏真值确认是不同阶段。通用 Watch 自动结单尚未接通；STOP 停止主轮次，已派出的 Worker 需指定取消。<br>API receipts, ticket outcomes, and game-state confirmation are distinct stages. Generic Watch-based completion is not connected. STOP ends the main turn; an already dispatched Worker requires explicit cancellation.
+
 ## 当前边界与后续工作 / Limits and next steps
 
 - `executed` 只表示接口调用获得执行回执，不代表战果确认。通用 Watch 事件读取与证据展示已有，通用 Watch 自动结单尚未接通。<br>`executed` means API calls received execution receipts; it does not confirm combat effects. Watch event reading and evidence display exist, but generic Watch-based automatic completion is not connected yet.

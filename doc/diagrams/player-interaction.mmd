@@ -1,0 +1,78 @@
+%%{init: {"theme": "neutral", "themeVariables": {"fontFamily": "Noto Sans CJK SC, Microsoft YaHei, sans-serif", "fontSize": "16px"}, "sequence": {"mirrorActors": false, "wrap": true}}}%%
+sequenceDiagram
+    autonumber
+    actor Player as 玩家
+    participant UI as 游戏界面 / Bridge
+    participant Host as Harness 宿主
+    participant Main as 主 Agent
+    participant S as 工单调度器
+    participant W as Worker
+    participant API as 受控 API / 第二层
+    participant G as 游戏
+    Player->>UI: 输入请求
+    UI->>Host: 玩家原文与本局标识
+    opt 本局首次输入
+        Host->>Host: 新建独立主会话，隐藏注入 onceopen
+    end
+    Host->>Main: 玩家输入 + persona + 宿主上下文
+    Main->>Main: 判断意图、授权与边界
+    alt 需要先澄清
+        Main-->>Host: 提问，不发起业务执行
+        Host-->>UI: 显示回复
+    else 创建可执行任务
+        Main->>S: 创建工单，经 Bridge 文件协议
+        S->>S: 去重、绑定对局、固定执行方式
+        S-->>Main: 工单 ID 与执行方式
+        alt 默认 Worker 模式
+            Main-->>Host: 简短确认，结束当前轮次
+            Host-->>UI: 显示确认
+            S->>W: Adapter 启动并持有独立 Worker
+            W->>API: find / schema 查询接口
+            W->>API: 工单范围内 call
+            API->>API: 检查授权，记录调用意图
+            API->>G: 复用 handler 提交请求
+            G-->>API: 游戏回执
+            API-->>W: 结果及不确定性
+            W->>S: finish，提交结果与具体原因
+        else 仅主 Agent 模式
+            Note over Main,S: 保留工单，不创建 Worker
+            Main->>API: find / schema + sp_main_api_call
+            API->>API: 校验原会话、对局、轮次和授权
+            API->>G: 复用 handler 提交请求
+            G-->>API: 游戏回执
+            API-->>Main: 结果及不确定性
+            Main->>S: sp_main_api_finish
+            Main-->>Host: 说明结果，结束轮次
+            Host-->>UI: 显示回复
+        end
+        opt 工单具有已实现的真值完成判据
+            loop 判据监视期间
+                S->>G: 直接读取新鲜真值
+                G-->>S: 状态样本
+                S->>S: 满足判据后更新 completed
+            end
+        end
+        Note over S,G: executed 仅表示 API 执行记录；通用 Watch 自动结单尚未接通
+        S-->>UI: 经 Bridge 更新卡片、调用证据与详情
+        opt Worker 出现受阻、需澄清或其他问题
+            S->>Host: 排队投递一次问题通知
+            Note over Host,Main: 绑定原主会话，玩家输入优先
+            Host->>Main: 仅文字通知轮次，禁止工具
+            Main-->>Host: 解释问题或向玩家澄清
+            Host-->>UI: 显示回复
+        end
+    end
+    opt 玩家点击 STOP
+        Player->>UI: STOP
+        UI->>Host: 停止所选目标当前主轮次
+        Host->>Main: 中断生成，抑制迟到输出
+        Note over Host,W: 默认模式已派出的 Worker 需指定取消
+    end
+    opt 玩家销毁工单
+        Player->>UI: DESTROY
+        UI->>S: 隐藏并取消指定工单
+        S->>API: 拒绝该工单后续调用
+        S->>W: 停止对应 Worker
+        S->>Host: 若为主模式，停止对应执行轮次
+        Note over API,G: 已提交的游戏命令不会因此撤回
+    end

@@ -1,0 +1,35 @@
+%%{init: {"theme": "neutral", "themeVariables": {"fontFamily": "Noto Sans CJK SC, Microsoft YaHei, sans-serif", "fontSize": "16px"}, "sequence": {"mirrorActors": false, "wrap": true}}}%%
+flowchart TB
+    Client["外部 MCP 客户端"]
+    Executor["第三层执行者<br/>Worker / 仅主 Agent"]
+    Guard["第三层受控调用<br/>ticket_api.py"]
+    subgraph L2["第二层 · MCP 转译层"]
+        Entry["mcp_server.py<br/>JSON-RPC / stdio"]
+        Registry["TOOLS 注册表<br/>工具 schema 与 handler"]
+        HTTP["HTTP 请求与回执处理<br/>保留错误、部分成功和结果不明"]
+        Project["compact_replies.py<br/>按工具规则投影字段"]
+        Brief["track_briefs.py<br/>世代核对、基准与差分"]
+        Motion["track_motion.py<br/>运动估计与可疑标注"]
+        Required["规则保护<br/>objectId 变化进入 mustReport"]
+        Rank["Tiny MLP 排序<br/>普通正文预算裁剪"]
+        Events["watch_events.py<br/>游标读取、过滤与去重"]
+        Result["工具结果<br/>JSON / 图片 / 错误回执"]
+    end
+    Bridge["第一层 · 游戏 Bridge<br/>本机 HTTP / Unity 主线程"]
+    Outbox[("comms/outbox.jsonl<br/>Watch 事件")]
+    Client --> Entry --> Registry
+    Executor --> Guard -->|"直接复用 handler"| Registry
+    Registry --> HTTP
+    HTTP <-->|"状态查询 / 命令提交"| Bridge
+    HTTP -->|"普通响应、命令回执"| Result
+    HTTP -->|"支持压缩的只读响应"| Project --> Result
+    Registry -->|"sp_tracks_brief"| Brief
+    Brief <-->|"读取航迹并核对世代"| HTTP
+    Brief --> Motion
+    Motion --> Required -->|"mustReport：独立于普通预算"| Result
+    Motion --> Rank -->|"brief：普通候选"| Result
+    Bridge -->|"原生 Watch 采样产生事件"| Outbox
+    Registry -->|"sp_watch_events"| Events
+    Outbox --> Events --> Result
+    Result --> Client
+    Result --> Guard

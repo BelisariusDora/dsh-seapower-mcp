@@ -1,0 +1,47 @@
+%%{init: {"theme": "neutral", "themeVariables": {"fontFamily": "Noto Sans CJK SC, Microsoft YaHei, sans-serif", "fontSize": "16px"}, "sequence": {"mirrorActors": false, "wrap": true}}}%%
+flowchart TB
+    UI["第四层 · 游戏界面<br/>聊天 / 工单 / Settings"]
+    Protocol["第一层 TicketBridge 中转<br/>commands / responses 文件协议"]
+    subgraph L3["第三层 · Harness 调度层"]
+        Chat["主会话 Adapter<br/>DSH sender + tailer / Codex app-server"]
+        Main["本局主 Agent<br/>理解意图、判断边界、创建工单"]
+        Scheduler["ticket_scheduler.py<br/>独立 Python 单写者"]
+        Store[("ticket_store.py<br/>工单账本、去重与状态")]
+        Mode{"建单时固定执行方式"}
+        WA["Worker Adapter<br/>DSH one-shot / Codex app-server"]
+        Worker["独立 Worker<br/>主轮次结束后仍可运行"]
+        Bound["ticket_main.py<br/>绑定原会话、对局与轮次"]
+        Catalog["api_catalog.py<br/>sp_api_find / sp_api_schema"]
+        Guard["ticket_api.py<br/>范围、预算、HOLD、世代检查"]
+        Ledger[("调用证据<br/>intent / 回执 / uncertain")]
+        Predicate["ticket_predicates.py<br/>确定性完成判据"]
+        Present["ticket_presentation.py<br/>卡片、详情与 Watch 边界"]
+        Notify["ticket_notifications.py<br/>原会话投递、排队与去重"]
+        Reply["原主 Agent 通知轮次<br/>仅文字说明，禁止工具"]
+    end
+    L2["第二层 · 既有 MCP handler"]
+    Game["第一层 · 游戏真值与命令接口"]
+    UI <-->|"输入、回复、STOP"| Chat
+    Chat <--> Main
+    Main -->|"创建工单"| Protocol
+    Protocol <--> Scheduler
+    Scheduler <--> Store
+    Scheduler --> Mode
+    Mode -->|"默认 Worker"| WA --> Worker
+    Mode -->|"仅主 Agent"| Bound
+    Main -->|"同轮执行"| Bound
+    Worker --> Catalog
+    Bound --> Catalog
+    Worker -->|"sp_api_call / finish"| Guard
+    Bound -->|"sp_main_api_call / finish"| Guard
+    Guard --> L2 --> Game
+    Guard --> Ledger
+    Scheduler -->|"直接采样真值"| Game
+    Game --> Predicate --> Scheduler
+    Store --> Present
+    Ledger --> Present
+    Present -->|"只读快照，经 Bridge"| UI
+    Scheduler -->|"受阻、需澄清、失败等"| Notify
+    Notify --> Reply --> Chat
+    UI -->|"DESTROY"| Protocol
+    Scheduler -->|"取消并停止执行者"| WA
