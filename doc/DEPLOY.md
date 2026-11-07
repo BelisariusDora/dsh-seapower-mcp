@@ -1,6 +1,15 @@
 # Sea Power MCP：部署与接入指南
 
-发行版本：Alpha 1.1（v1.1.0-alpha）。仍处于 Alpha 阶段。
+发行版本：Alpha 1.1.1（v1.1.1-alpha）。仍处于 Alpha 阶段。
+
+Harness 接入文档按所用客户端选择。安装、启动与验收步骤请一起完成。
+
+- [DSH 接入与验收](../comms/DSH.md)
+- [Codex 接入与验收](../comms/CODEX_DEPLOY.md)
+
+安装后按 [Harness 部署检查](../comms/DOCTOR.md) 运行随包提供的 `harness/doctor.py`。检查器逐项报告 `PASS / FAIL / NOT_CHECKED`，需完成目标会话与游戏内只读闭环验收后再报告接入完成。
+
+仅使用外部 MCP 客户端时按第 3 节接入。使用游戏内通联时，继续完成第 4 节、对应 Harness 的安装步骤及第 7 节只读闭环验收后，才报告接入完成。
 
 本 README 是部署入口。Agent 应先确定用户要“仅 MCP、DSH、Codex、双后端”中的哪种，再按对应步骤操作。安装包中的路径均相对于本 README 所在的模组根目录；无需先读其他文档才能启动。部署请求授权安装和接入，不等于授权作战测试；先用只读查询验收。
 
@@ -98,7 +107,7 @@ $PluginDir = Join-Path $DshProfile 'node_modules\seapower-ticket-worker'
 New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
 Copy-Item (Join-Path $ModRoot 'harness\DSH\dsh_ticket_plugin.mjs') (Join-Path $PluginDir 'index.mjs')
 Copy-Item (Join-Path $ModRoot 'harness\DSH\dsh_ticket_notifications.mjs') (Join-Path $PluginDir 'dsh_ticket_notifications.mjs')
-$package = '{"name":"seapower-ticket-worker","version":"1.1.0-alpha","type":"module","main":"index.mjs"}'
+$package = '{"name":"seapower-ticket-worker","version":"1.1.1-alpha","type":"module","main":"index.mjs"}'
 [IO.File]::WriteAllText((Join-Path $PluginDir 'package.json'), $package, (New-Object Text.UTF8Encoding($false)))
 ```
 

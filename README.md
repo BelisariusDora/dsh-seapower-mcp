@@ -8,7 +8,9 @@
 
 **Connect Sea Power's battlefield state and command controls to MCP.** An in-game bridge plugin and a Python adapter let MCP clients inspect units, formations, weapons, and flight decks, then issue navigation, aviation, and engagement orders.
 
-[下载 / Download Alpha 1.1](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v1.1.0-alpha) · [完整部署指南 / Deployment guide](doc/DEPLOY.md) · [四层文档 / Architecture docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
+[下载 / Download Alpha 1.1.1](https://github.com/BelisariusDora/dsh-seapower-mcp/releases/tag/v1.1.1-alpha) · [完整部署指南 / Deployment guide](doc/DEPLOY.md) · [四层文档 / Architecture docs](doc/README.md) · [MCP 文档 / MCP docs](doc/layer2_translation.md)
+
+Harness 接入与验收 / Harness setup and verification · [DSH](comms/DSH.md) · [Codex](comms/CODEX_DEPLOY.md)
 
 ## 当前 AI 能力 / What AI can do today
 
@@ -73,7 +75,13 @@ Alpha 的直连工具可以读取原始游戏状态并下达指令。Watch 的 M
 
 The Alpha tools can read raw game state and issue orders directly. Some MCP Watch parameters differ from the current bridge contract. See the [MCP adapter notes](doc/layer2_translation.md).
 
-## Alpha 1.1 更新 / Changes
+## Alpha 1.1.1 更新 / Changes
+
+- **部署检查 / Deployment diagnostics**：发行包新增 `harness/doctor.py`，逐项报告文件、提示词、运行入口、DSH 插件版本及本局绑定检查结果，保留当前会话与游戏闭环的人工验收项。<br>The package includes `harness/doctor.py` to check files, prompts, entry points, the loaded DSH plugin, and game-session binding. Actual session tools and the game round trip require manual verification.
+- **游戏内澄清 / In-game clarification**：提示词要求用正文提问，避免调用游戏界面无法显示的选择题卡片；sender 对缺失提示词和非游戏模式输出告警。<br>Prompts require text-only clarification. The sender warns about missing dialogue instructions and non-game modes.
+- **接入入口 / Setup navigation**：最外层部署 README 直接链接 DSH、Codex 接入说明与 doctor 使用文档。<br>The deployment README links directly to the DSH, Codex, and doctor guides.
+
+### Alpha 1.1 更新 / Previous changes
 
 - **工单本地化 / Ticket localization**：固定卡片、状态、按钮和详情文本读取 `language_cn/ui.ini`、`language_en/ui.ini`，跟随界面语言；升级只补缺键。任务标题与 Agent 原始回报保留原文。<br>Ticket labels, states, buttons, and details use external language files and follow the UI language. Upgrades preserve custom entries. Agent-generated titles and reports retain their original language.
 - **回复语言 / Reply language**：首轮隐藏提示要求按玩家输入语言回复，新会话首句起生效。<br>The first-turn prompt asks the assistant to reply in the player's input language, starting with a new session.

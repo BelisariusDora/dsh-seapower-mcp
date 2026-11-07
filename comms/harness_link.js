@@ -965,9 +965,11 @@ function createLink(options) {
       let persona = '执行方式以建单回执 executionMode 为准：worker 确认后结束；main 本轮使用 sp_main_api_call/finish 完成接口交互后报告。不派子代理，不轮询。';
       try {
         const file = cfg.personaFile || path.join(path.dirname(path.dirname(cfg.outbox)), 'persona.md');
-        persona += '\n'+io.readText(file).trim();
+        const style = io.readText(file).trim();
+        if (!style) log('WARNING persona.md is empty; game dialogue instructions are missing');
+        persona += '\n' + style;
       } catch (e) {
-        if (e.code !== 'ENOENT') log('cannot load persona.md: ' + e.message);
+        log('WARNING cannot load persona.md; game dialogue instructions are missing: ' + e.message);
       }
       if (!initializedSessions.has(cfg.sessionId)) {
         let context;
@@ -1580,6 +1582,10 @@ function main() {
   }
   const log = makeLogger(cfg);
   try { fs.mkdirSync(path.dirname(cfg.logFile), { recursive: true }); } catch (e) { }
+
+  if (cfg.mode !== 'game-world' && !cli.probe && process.argv.indexOf('--unlock') < 0) {
+    log('WARNING mode=' + cfg.mode + ': persona.md and onceopen.md will not be injected; use --game-world for in-game dialogue');
+  }
 
   if (process.argv.indexOf("--unlock") >= 0) {
     // Operator escape hatch for the one refusal they cannot fix from inside the loop. It

@@ -125,7 +125,7 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     if (-not (Test-Path $modDir)) { New-Item -ItemType Directory -Path $modDir -Force | Out-Null }
     Copy-Item $outDll (Join-Path $modDir 'SeaPowerAgentBridge.dll') -Force
     $deployReadme = [IO.File]::ReadAllText((Join-Path $here 'doc\DEPLOY.md'), [Text.Encoding]::UTF8)
-    $deployReadme = $deployReadme.Replace('../comms/DSH.md', 'harness/DSH/README.md').Replace('../comms/CODEX_DEPLOY.md', 'harness/Codex/README.md')
+    $deployReadme = $deployReadme.Replace('../comms/DSH.md', 'harness/DSH/README.md').Replace('../comms/CODEX_DEPLOY.md', 'harness/Codex/README.md').Replace('../comms/DOCTOR.md', 'harness/DOCTOR.md')
     [IO.File]::WriteAllText((Join-Path $modDir 'README.md'), $deployReadme)
     Copy-Item $stampFile (Join-Path $modDir 'SeaPowerAgentBridge.build') -Force
     # AnchorChain is a separately installed loader; reference it for compilation only.
@@ -134,6 +134,8 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
     & (Join-Path $here 'deploy_modules.ps1') -ModDir $modDir
     $harnessDir = Join-Path $modDir 'harness'
     $harnessFiles = @{
+        'doctor.py' = 'doctor.py'
+        'DOCTOR.md' = 'DOCTOR.md'
         'README.md' = 'HARNESS.md'
         'DSH\README.md' = 'DSH.md'
         'DSH\harness_link.js' = 'harness_link.js'
@@ -155,6 +157,10 @@ $modDir = Join-Path $gameRoot 'Sea Power_Data\StreamingAssets\dsh-spmcp'
         $destination = Join-Path $harnessDir $entry.Key
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $here ('comms\' + $entry.Value)) -Destination $destination -Force
+        if ($entry.Value -in @('DSH.md', 'CODEX_DEPLOY.md')) {
+            $body = [IO.File]::ReadAllText($destination).Replace('(DOCTOR.md)', '(../DOCTOR.md)')
+            [IO.File]::WriteAllText($destination, $body, (New-Object Text.UTF8Encoding($false)))
+        }
     }
 
     Copy-Item -LiteralPath (Join-Path $here 'doc\deployment_layout.md') -Destination (Join-Path $modDir 'MODULES.md') -Force

@@ -7,7 +7,7 @@ requestId 必须为标准 UUID（8-4-4-4-12位十六进制）；不要把标题�
 tools 可缩小到已知 API 名称列表；默认 * 仅允许业务 API，禁止递归建单和通信控制。resources 默认 world 与所有活动工单冲突；明确仅绘图时可用 ["plot"]，明确控制单位时可用 ["unit:本局ID"]。不要用错误的资源范围绕过冲突。
 已明确的单舰航速继续用 command={kind:"set_speed",unit_id:本局己方舰ID,knots:目标节数}，predicate={kind:"speed_reached",unit_id:相同ID,target_knots:相同目标,tolerance_knots:0.5}，由调度器实际观测达标后 completed。
 通用任务的 executed 仅表示接口已执行、有宿主回执，不能声称异步战果已完成。起飞请求不等于 airborne，攻击请求不等于摧毁。Worker 不等战果、不私自加速游戏或追加任务。
-timeoutSeconds 默认900，最多3600，按墙钟计时。对象和授权不清楚时先一次澄清，不使用旧局ID。需要查询进度时才调用 sp_ticket_list。
+timeoutSeconds 默认900，最多3600，按墙钟计时。对象和授权不清楚时，用正文一次性问全，候选项可按 1/2/3 列出，不使用旧局ID。禁止调用 ask_user_question 或任何提问、选择题、确认卡类交互工具，游戏通信界面无法显示或回答这些卡片。需要查询进度时才调用 sp_ticket_list。
 
 执行结果异常会由宿主投递回原主会话；收到 seapower-notice 时只向玩家说明问题或询问缺少的信息，发完立即结束。该通知轮次禁止一切工具调用、重试、改派、监视和游戏操作；不要自动续建任务。
 

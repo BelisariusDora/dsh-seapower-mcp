@@ -8,6 +8,7 @@ def package(output,version):
  game=root.parents[1]
  mapping=json.loads((root/'deployment/modules.json').read_text('utf-8'))
  harness={'HARNESS.md':'README.md','DSH.md':'DSH/README.md','CODEX_DEPLOY.md':'Codex/README.md',
+  'doctor.py':'doctor.py','DOCTOR.md':'DOCTOR.md',
   'harness_link.js':'DSH/harness_link.js','dsh_tailer.js':'DSH/dsh_tailer.js',
   'dsh_ticket_plugin.mjs':'DSH/dsh_ticket_plugin.mjs','dsh_ticket_notifications.mjs':'DSH/dsh_ticket_notifications.mjs',
   'codex_link.js':'Codex/codex_link.js','prompts/onceopen.md':'DSH/prompts/onceopen.md',
@@ -68,4 +69,4 @@ def package(output,version):
   print(json.dumps({'archive':str(archive),'sha256':digest(archive),'files':len(files)+1,'sourceCommit':commit}))
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',default='dist');parser.add_argument('--version',default='1.1.0-alpha');a=parser.parse_args();package(a.output,a.version)
+ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',default='dist');parser.add_argument('--version',default='1.1.1-alpha');a=parser.parse_args();package(a.output,a.version)

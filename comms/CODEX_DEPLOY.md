@@ -2,6 +2,8 @@
 
 首次部署读 `<MOD_ROOT>/README.md` 第 1、2、4、6、7 节即可启动。此路径不要求 DSH 或 Node.js。
 
+安装后运行 `harness/doctor.py --backend codex`，启动组件并进入场景后再加 `--live`。完整命令与结果解释见 [Harness 部署检查](DOCTOR.md)。
+
 ## 进程和 CLI 来源
 
 - 主聊天：`harness/Codex/codex_chat.py`，独立持有 ephemeral app-server thread。
